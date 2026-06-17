@@ -4,10 +4,13 @@ import {
   evolveIdentity,
   postFeedCommand,
   runIdentityDaemon,
+  runScheduler,
+  runWorker,
+  seedDefaultSubscriptions,
   writeDiaryCommand,
   writePublicDiaryFromPrivateMemory,
 } from './service.js';
-import { listAgents } from './db.js';
+import { listAgents, listEvents, listJobs } from './db.js';
 
 const HELP = `agent-village
 
@@ -17,8 +20,13 @@ Usage:
   agent-village diary write --agent-key KEY --text TEXT
   agent-village feed post --agent-key KEY --text TEXT [--type learning_log] [--emoji EMOJI] [--proof-url URL]
   agent-village chat owner --agent-key KEY --message TEXT [--json]
-  agent-village chat stranger --agent-key KEY --message TEXT [--json]
+  agent-village chat stranger (--agent-key KEY | --agent-id ID) --message TEXT [--json]
   agent-village identity evolve --agent-key KEY [--json]
+  agent-village events list [--agent-id ID] [--visibility public] [--limit 50] [--json]
+  agent-village jobs list [--agent-id ID] [--status queued] [--limit 50] [--json]
+  agent-village subscriptions seed [--json]
+  agent-village scheduler [--interval 60] [--once]
+  agent-village worker [--interval 2] [--once] [--worker-id ID]
   agent-village daemon identity [--interval 60] [--once]
 `;
 
@@ -74,8 +82,44 @@ function printAgents(agents) {
   }
 }
 
+function parsePositiveNumber(flags, name, fallback) {
+  const raw = flags[name] || fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    const error = new Error(`--${name} must be a positive number.`);
+    error.code = 'usage_error';
+    error.exitCode = 2;
+    throw error;
+  }
+  return value;
+}
+
 function briefRow(row) {
   return row?.id ? row.id : JSON.stringify(row);
+}
+
+function printEvents(events) {
+  if (!events.length) {
+    console.log('No events found.');
+    return;
+  }
+  for (const event of events) {
+    const agent = event.source_agent_id || event.target_agent_id || 'system';
+    const summary = event.summary ? ` - ${event.summary}` : '';
+    console.log(`${event.created_at} ${event.event_type} [${event.visibility}] ${agent}${summary}`);
+  }
+}
+
+function printJobs(jobs) {
+  if (!jobs.length) {
+    console.log('No jobs found.');
+    return;
+  }
+  for (const job of jobs) {
+    const agent = job.agent_id || 'system';
+    const error = job.error ? ` - ${job.error}` : '';
+    console.log(`${job.created_at} ${job.job_type} [${job.status}] ${agent}${error}`);
+  }
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -138,9 +182,18 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (scope === 'chat' && ['owner', 'stranger'].includes(action)) {
+    const agentKey = action === 'owner' || flags['agent-key'] ? requireFlag(flags, 'agent-key') : null;
+    const agentId = flags['agent-id'] || null;
+    if (action === 'stranger' && !agentKey && !agentId) {
+      const error = new Error('Missing --agent-key or --agent-id.');
+      error.code = 'usage_error';
+      error.exitCode = 2;
+      throw error;
+    }
     const result = await chatWithAgent({
       context: action,
-      agentKey: requireFlag(flags, 'agent-key'),
+      agentKey,
+      agentId,
       message: requireFlag(flags, 'message'),
     });
     flags.json ? printJson(result) : console.log(result.message);
@@ -155,15 +208,58 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
 
-  if (scope === 'daemon' && action === 'identity') {
-    const intervalSeconds = Number(flags.interval || 60);
-    if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) {
-      const error = new Error('--interval must be a positive number of seconds.');
-      error.code = 'usage_error';
-      error.exitCode = 2;
-      throw error;
+  if (scope === 'events' && action === 'list') {
+    const events = await listEvents({
+      agentId: flags['agent-id'] || null,
+      visibility: flags.visibility || null,
+      limit: parsePositiveNumber(flags, 'limit', 50),
+    });
+    flags.json ? printJson(events) : printEvents(events);
+    return;
+  }
+
+  if (scope === 'jobs' && action === 'list') {
+    const jobs = await listJobs({
+      agentId: flags['agent-id'] || null,
+      status: flags.status || null,
+      limit: parsePositiveNumber(flags, 'limit', 50),
+    });
+    flags.json ? printJson(jobs) : printJobs(jobs);
+    return;
+  }
+
+  if (scope === 'subscriptions' && action === 'seed') {
+    const result = await seedDefaultSubscriptions();
+    if (flags.json) {
+      printJson(result);
+    } else {
+      console.log(`Seeded ${result.created.length} subscription(s) for ${result.agents.length} agent(s).`);
     }
-    await runIdentityDaemon({ intervalSeconds, once: Boolean(flags.once) });
+    return;
+  }
+
+  if (scope === 'scheduler') {
+    await runScheduler({
+      intervalSeconds: parsePositiveNumber(flags, 'interval', 60),
+      once: Boolean(flags.once),
+    });
+    return;
+  }
+
+  if (scope === 'worker') {
+    await runWorker({
+      intervalSeconds: parsePositiveNumber(flags, 'interval', 2),
+      workerId: flags['worker-id'] || undefined,
+      once: Boolean(flags.once),
+    });
+    return;
+  }
+
+  if (scope === 'daemon' && action === 'identity') {
+    await runIdentityDaemon({
+      intervalSeconds: parsePositiveNumber(flags, 'interval', 60),
+      once: Boolean(flags.once),
+    });
     return;
   }
 

@@ -1,7 +1,8 @@
 import http from 'node:http';
 import { getPort, loadEnv } from './config.js';
+import { listEvents, listJobs } from './db.js';
 import { getModel } from './openai.js';
-import { chatWithAgent, evolveIdentity } from './service.js';
+import { chatWithAgent, evolveIdentity, seedDefaultSubscriptions } from './service.js';
 
 loadEnv();
 
@@ -59,9 +60,16 @@ async function readJson(request) {
 function pathParts(request) {
   const url = new URL(request.url, 'http://localhost');
   return {
+    url,
     pathname: url.pathname,
     parts: url.pathname.split('/').filter(Boolean),
   };
+}
+
+function intParam(value, fallback, max = 500) {
+  const n = Number(value || fallback);
+  if (!Number.isInteger(n) || n <= 0) return fallback;
+  return Math.min(n, max);
 }
 
 async function route(request, response) {
@@ -70,7 +78,7 @@ async function route(request, response) {
     return;
   }
 
-  const { pathname, parts } = pathParts(request);
+  const { url, pathname, parts } = pathParts(request);
 
   if (request.method === 'GET' && pathname === '/health') {
     sendJson(response, 200, {
@@ -78,6 +86,36 @@ async function route(request, response) {
       service: 'agent-village',
       model: getModel(),
       time: new Date().toISOString(),
+    });
+    return;
+  }
+
+  if (request.method === 'GET' && pathname === '/events') {
+    const events = await listEvents({
+      agentId: url.searchParams.get('agent_id'),
+      visibility: url.searchParams.get('visibility'),
+      limit: intParam(url.searchParams.get('limit'), 50),
+    });
+    sendJson(response, 200, { events });
+    return;
+  }
+
+  if (request.method === 'GET' && pathname === '/jobs') {
+    const jobs = await listJobs({
+      agentId: url.searchParams.get('agent_id'),
+      status: url.searchParams.get('status'),
+      limit: intParam(url.searchParams.get('limit'), 50),
+    });
+    sendJson(response, 200, { jobs });
+    return;
+  }
+
+  if (request.method === 'POST' && pathname === '/subscriptions/seed') {
+    const result = await seedDefaultSubscriptions();
+    sendJson(response, 200, {
+      agents: result.agents.length,
+      created: result.created.length,
+      subscription_ids: result.created.map(row => row.id),
     });
     return;
   }

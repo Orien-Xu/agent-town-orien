@@ -1416,139 +1416,94 @@ const SUPABASE = 'https://yqklocccjhhnmcojdunp.supabase.co/rest/v1';
 const APIKEY   = 'sb_publishable_TAhPjAB6HBdvrQm6j3Al-g_USwPdt2S';
 const H        = { 'apikey': APIKEY, 'Content-Type': 'application/json' };
 
-// ===== STREAM CHAT (optional — chat tab won't work without this) =====
-const STREAM_API_KEY = 'YOUR_STREAM_API_KEY';
-const BACKEND_URL = 'YOUR_BACKEND_URL';
+// ===== LOCAL BACKEND CHAT =====
+const BACKEND_URL = 'http://localhost:8787';
 
-// --- Pure helpers ---
-
-const msgHtml = myId => m => {
-  const side = m.user?.id === myId ? 'from-me' : 'from-them';
-  const time = new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  return `<div class="msg ${side}"><div class="msg-bubble">${esc(m.text || '')}</div><div class="msg-time">${time}</div></div>`;
-};
-
-const scrollToBottom = el => { el.scrollTop = el.scrollHeight; return el; };
-
+const scrollToBottom = el => { if (el) el.scrollTop = el.scrollHeight; return el; };
 const TYPING_HTML = '<div class="typing-indicator" id="typingIndicator"><div class="typing-dots"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div></div>';
 
-const renderHistory = (el, render) => msgs => {
-  el.innerHTML = msgs.map(render).join('') + TYPING_HTML;
-  return scrollToBottom(el);
-};
+let _chat = { agent: null, context: 'stranger', sending: false };
 
-const appendToEl = (el, render) => msg => {
-  const indicator = document.getElementById('typingIndicator');
-  if (indicator) indicator.insertAdjacentHTML('beforebegin', render(msg));
-  else el.innerHTML += render(msg);
-  return scrollToBottom(el);
-};
+const backendBaseUrl = () => (BACKEND_URL || '').replace(/\/+$/, '');
+const backendConfigured = () => backendBaseUrl() && !backendBaseUrl().includes('YOUR_');
 
-const subscribe = (channel, event, handler) => {
-  channel.on(event, handler);
-  return () => channel.off(event, handler);
-};
-
-// Typing indicator — show/hide + debounce state (mirrors nova-web-product use-stream-chat.ts)
-let _typingTimer = null;
-let _isOtherTyping = false;
-
-const showTyping = () => {
-  _isOtherTyping = true;
-  document.getElementById('typingIndicator')?.classList.add('visible');
-  scrollToBottom(document.getElementById('dmMessages'));
-};
-const hideTyping = () => {
-  _isOtherTyping = false;
-  if (_typingTimer) { clearTimeout(_typingTimer); _typingTimer = null; }
-  document.getElementById('typingIndicator')?.classList.remove('visible');
-};
-
-// Subscribe to typing events — returns unsubscribe fn
-// Debounce logic matches nova-web-product exactly:
-//   typing.start  → show immediately, 6s fallback auto-hide timer
-//   typing.stop   → hide after 3.5s delay (not immediately)
-//   new AI msg    → force-clear immediately (see message.new handler)
-const subscribeTyping = (channel, myId) => {
-  const onStart = e => {
-    if (e.user?.id === myId) return;
-    if (_typingTimer) clearTimeout(_typingTimer);
-    if (!_isOtherTyping) showTyping();
-    _typingTimer = setTimeout(() => { _isOtherTyping = false; hideTyping(); _typingTimer = null; }, 6000);
-  };
-  const onStop = e => {
-    if (e.user?.id === myId) return;
-    if (_typingTimer) clearTimeout(_typingTimer);
-    _typingTimer = setTimeout(() => { _isOtherTyping = false; hideTyping(); _typingTimer = null; }, 3500);
-  };
-  channel.on('typing.start', onStart);
-  channel.on('typing.stop',  onStop);
-  return () => { channel.off('typing.start', onStart); channel.off('typing.stop', onStop); };
-};
-
-// Guest ID — stable UUID per browser, persisted in localStorage
 const getGuestId = () => {
-  const key = 'sc_guest_id';
+  const key = 'agent_village_guest_id';
   let id = localStorage.getItem(key);
-  if (!id) { id = crypto.randomUUID(); localStorage.setItem(key, id); }
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(key, id);
+  }
   return id;
 };
 
-// Fetch a signed JWT from the backend for the given user UUID
-const fetchGuestToken = userId =>
-  fetch(`${BACKEND_URL}/chat/token`, {
+function getOwnerAgentKey(agent) {
+  const storageKey = `agent_village_owner_key_${agent.id}`;
+  let key = localStorage.getItem(storageKey);
+  if (!key) {
+    key = window.prompt(`Owner key for ${agent.name}`);
+    if (key) localStorage.setItem(storageKey, key.trim());
+  }
+  return key?.trim() || '';
+}
+
+const showTyping = () => {
+  document.getElementById('typingIndicator')?.classList.add('visible');
+  scrollToBottom(document.getElementById('dmMessages'));
+};
+
+const hideTyping = () => {
+  document.getElementById('typingIndicator')?.classList.remove('visible');
+};
+
+function dmMessageHtml(side, text, createdAt = new Date()) {
+  const time = new Date(createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return `<div class="msg ${side}"><div class="msg-bubble">${esc(text || '')}</div><div class="msg-time">${time}</div></div>`;
+}
+
+function setDmMessages(html) {
+  const el = document.getElementById('dmMessages');
+  el.innerHTML = `${html}${TYPING_HTML}`;
+  scrollToBottom(el);
+}
+
+function appendDmMessage(side, text) {
+  const el = document.getElementById('dmMessages');
+  const indicator = document.getElementById('typingIndicator');
+  const html = dmMessageHtml(side, text);
+  if (indicator) indicator.insertAdjacentHTML('beforebegin', html);
+  else el.insertAdjacentHTML('beforeend', html);
+  scrollToBottom(el);
+}
+
+function renderBackendIntro(agent, context) {
+  const label = context === 'owner' ? 'Owner channel' : 'Visitor channel';
+  setDmMessages(`<div style="text-align:center;opacity:0.45;padding:24px;font-size:13px;line-height:1.6">${esc(label)} connected to the local Agent Village backend.</div>`);
+}
+
+async function postBackendChat(session, text) {
+  if (!backendConfigured()) throw new Error('Set BACKEND_URL to your local API server.');
+  if (!session.agent?.id) throw new Error('No agent is selected.');
+
+  const isOwner = session.context === 'owner';
+  const ownerKey = isOwner ? getOwnerAgentKey(session.agent) : null;
+  if (isOwner && !ownerKey) throw new Error('Owner chat requires an agent key.');
+
+  const response = await fetch(`${backendBaseUrl()}${isOwner ? '/chat/owner' : '/chat/stranger'}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user_id: userId }),
-  }).then(r => { if (!r.ok) throw new Error(`token ${r.status}`); return r.json(); });
-
-// --- Singleton client (lazy, race-safe) ---
-const makeClientFactory = apiKey => {
-  let client = null;
-  let pending = null;
-  return () => {
-    if (client?.userID) return Promise.resolve(client);
-    if (pending) return pending;
-    const userId = getGuestId();
-    pending = Promise.all([
-      import('https://esm.sh/stream-chat'),
-      fetchGuestToken(userId),
-    ]).then(([{ StreamChat }, { token }]) => {
-      client = new StreamChat(apiKey);
-      return client.connectUser({ id: userId, role: 'guest' }, token);
-    }).then(() => { pending = null; return client; })
-      .catch(e => { pending = null; client = null; throw e; });
-    return pending;
-  };
-};
-const getClient = makeClientFactory(STREAM_API_KEY);
-
-// --- Mutable chat session (single ref) ---
-let _chat = { channel: null, unsubscribe: null };
+    body: JSON.stringify(isOwner
+      ? { agent_key: ownerKey, owner_id: getGuestId(), message: text }
+      : { agent_id: session.agent.id, visitor_id: getGuestId(), message: text }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error?.message || `Chat failed with HTTP ${response.status}`);
+  return data;
+}
 
 const teardownChat = async () => {
-  _chat.unsubscribe?.();
-  _chat.unsubTyping?.();
   hideTyping();
-  await _chat.channel?.stopWatching();
-  _chat = { channel: null, unsubscribe: null, unsubTyping: null };
-};
-
-// Channel ID: max 64 chars. r- + 24 chars of agentId + - + 36 chars of userId = 63
-const mkChannelId = (agentId, userId) =>
-  `r-${agentId.replace(/-/g, '').slice(0, 24)}-${userId.replace(/[^a-z0-9]/gi, '').slice(0, 36)}`;
-
-const setupChat = async agentId => {
-  await teardownChat();
-  const client  = await getClient();
-  const render  = msgHtml(client.userID);
-  const el      = document.getElementById('dmMessages');
-  const channel = client.channel('messaging', mkChannelId(agentId, client.userID), { agent_id: agentId, members: [client.userID, agentId] });
-  const { messages = [] } = await channel.watch();
-  renderHistory(el, render)(messages);
-  const unsubscribe    = subscribe(channel, 'message.new', e => { if (_typingTimer) { clearTimeout(_typingTimer); _typingTimer = null; } hideTyping(); appendToEl(el, render)(e.message); });
-  const unsubTyping  = subscribeTyping(channel, client.userID);
-  _chat = { channel, unsubscribe, unsubTyping };
+  _chat = { agent: null, context: 'stranger', sending: false };
 };
 
 let agents      = [];
@@ -1814,7 +1769,26 @@ function goToRoom(name) {
 // ===== WINDOWS GRID =====
 async function loadAgents() {
   try {
-    const r = await fetch(`${SUPABASE}/living_agents?select=*&order=created_at`, { headers: H });
+    const agentColumns = [
+      'id',
+      'name',
+      'bio',
+      'visitor_bio',
+      'status',
+      'accent_color',
+      'avatar_url',
+      'room_image_url',
+      'room_video_url',
+      'window_image_url',
+      'window_video_url',
+      'room_description',
+      'window_style',
+      'showcase_emoji',
+      'last_room_edit_at',
+      'created_at',
+      'updated_at',
+    ].join(',');
+    const r = await fetch(`${SUPABASE}/living_agents?select=${agentColumns}&order=created_at`, { headers: H });
     agents = await r.json();
   } catch(e) { agents = []; }
 
@@ -2382,16 +2356,10 @@ function openDmChat(idx, opts = {}) {
     document.getElementById('dmChatAvatar').src = a.avatar_url || a.room_image_url || '';
   }
 
-  // Show chat panel immediately with loading state
-  document.getElementById('dmMessages').innerHTML = '<div style="text-align:center;opacity:0.4;padding:24px;font-size:13px">connecting…</div>';
+  const context = header === 'home' ? 'owner' : 'stranger';
+  _chat = { agent: a, context, sending: false };
+  renderBackendIntro(a, context);
   document.getElementById('dmChat').classList.add('active');
-
-  // Connect to Stream Chat and open channel
-  const streamAgentId = a.platform_agent_id || a.id;
-  setupChat(streamAgentId).catch(err => {
-    console.error('Stream Chat error:', err);
-    document.getElementById('dmMessages').innerHTML = '<div style="text-align:center;opacity:0.4;padding:24px;font-size:13px;line-height:1.6">Chat requires a backend &mdash; see README for details</div>';
-  });
 }
 
 function closeDmChat() {
@@ -2407,14 +2375,29 @@ function closeDmChat() {
 async function sendDm() {
   const input = document.getElementById('dmInput');
   const text = input.value.trim();
-  if (!text || !_chat.channel) return;
+  if (!text || !_chat.agent || _chat.sending) return;
   input.value = '';
-  await _chat.channel.sendMessage({ text }).catch(() => { input.value = text; });
+  appendDmMessage('from-me', text);
+  _chat.sending = true;
+  input.disabled = true;
+  showTyping();
+  try {
+    const result = await postBackendChat(_chat, text);
+    hideTyping();
+    appendDmMessage('from-them', result.message || '');
+  } catch (err) {
+    hideTyping();
+    console.error('Backend chat error:', err);
+    appendDmMessage('from-them', `Backend chat error: ${err.message}`);
+  } finally {
+    _chat.sending = false;
+    input.disabled = false;
+    input.focus();
+  }
 }
 
 document.getElementById('dmInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') { e.preventDefault(); sendDm(); return; }
-  _chat.channel?.keystroke().catch(() => {});
 });
 
 // ===== ROOM VIEW (scroll-based) =====
