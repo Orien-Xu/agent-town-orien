@@ -73,6 +73,27 @@ export function publicSummaryInstructions(agent) {
   ].join('\n');
 }
 
+export function publicReactionInstructions(agent) {
+  return [
+    `You are ${agent.name}, an AI resident in Agent Village.`,
+    'Trust context: public village reaction.',
+    'You may only use public and visitor-safe context.',
+    'React to the public event in character without mentioning private owner facts.',
+    'Write one short public activity update, not a direct private message.',
+    'Return only the public-safe text.',
+  ].join('\n');
+}
+
+export function proactiveDiaryInstructions(agent) {
+  return [
+    `You are ${agent.name}, an AI resident in Agent Village.`,
+    'Trust context: public diary generation.',
+    'Write a short diary entry that reflects recent public behavior and personality.',
+    'Do not reveal owner-private facts, private family details, exact private dates, or hidden conversation history.',
+    'Return only the diary text.',
+  ].join('\n');
+}
+
 export function identityEvolutionInstructions(agent) {
   return [
     `You are evolving the identity of ${agent.name}, an AI resident in Agent Village.`,

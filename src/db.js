@@ -60,6 +60,13 @@ export async function supabaseRequest(path, { method = 'GET', query, body, heade
   return data;
 }
 
+export async function supabaseRpc(functionName, body = {}) {
+  return supabaseRequest(`rpc/${functionName}`, {
+    method: 'POST',
+    body,
+  });
+}
+
 export async function selectRows(table, query = {}) {
   return supabaseRequest(table, { query });
 }
@@ -79,6 +86,15 @@ export async function updateRows(table, query, patch) {
     query,
     headers: { Prefer: 'return=representation' },
     body: patch,
+  });
+}
+
+export async function listRecentRows(table, query, limit = 20) {
+  return selectRows(table, {
+    select: '*',
+    order: 'created_at.desc',
+    limit,
+    ...query,
   });
 }
 
@@ -115,6 +131,140 @@ export async function getAgentById(agentId) {
 
 export async function addPublicMemory(agentId, text) {
   return insertRow('living_memory', { agent_id: agentId, text });
+}
+
+export async function publishEvent({
+  eventType,
+  visibility,
+  sourceAgentId = null,
+  targetAgentId = null,
+  conversationId = null,
+  causedByEventId = null,
+  summary = null,
+  payload = {},
+}) {
+  return insertRow('living_agent_events', {
+    event_type: eventType,
+    visibility,
+    source_agent_id: sourceAgentId,
+    target_agent_id: targetAgentId,
+    conversation_id: conversationId,
+    caused_by_event_id: causedByEventId,
+    summary,
+    payload,
+  });
+}
+
+export async function listEvents({ agentId = null, visibility = null, limit = 50 } = {}) {
+  const query = {
+    select: '*',
+    order: 'created_at.desc',
+    limit,
+  };
+  if (visibility) query.visibility = `eq.${visibility}`;
+  if (agentId) query.or = `(source_agent_id.eq.${agentId},target_agent_id.eq.${agentId})`;
+  return selectRows('living_agent_events', query);
+}
+
+export async function getEventById(eventId) {
+  if (!eventId) return null;
+  const rows = await selectRows('living_agent_events', {
+    select: '*',
+    id: `eq.${eventId}`,
+    limit: 1,
+  });
+  return rows?.[0] || null;
+}
+
+export async function listSubscriptions() {
+  return selectRows('living_event_subscriptions', {
+    select: '*',
+    enabled: 'eq.true',
+    order: 'created_at',
+    limit: 500,
+  });
+}
+
+export async function createSubscription(row) {
+  return insertRow('living_event_subscriptions', row);
+}
+
+export async function enqueueJob({
+  agentId = null,
+  jobType,
+  visibility = 'internal',
+  priority = 100,
+  runAfter = null,
+  inputEventId = null,
+  input = {},
+  maxAttempts = 3,
+}) {
+  return insertRow('living_agent_jobs', {
+    agent_id: agentId,
+    job_type: jobType,
+    visibility,
+    priority,
+    run_after: runAfter || new Date().toISOString(),
+    input_event_id: inputEventId,
+    input,
+    max_attempts: maxAttempts,
+  });
+}
+
+export async function listJobs({ agentId = null, status = null, limit = 50 } = {}) {
+  const query = {
+    select: '*',
+    order: 'created_at.desc',
+    limit,
+  };
+  if (agentId) query.agent_id = `eq.${agentId}`;
+  if (status) query.status = `eq.${status}`;
+  return selectRows('living_agent_jobs', query);
+}
+
+export async function listRecentJobs({ agentId, jobType, since = null, statuses = null, limit = 20 }) {
+  const query = {
+    select: '*',
+    agent_id: `eq.${agentId}`,
+    job_type: `eq.${jobType}`,
+    order: 'created_at.desc',
+    limit,
+  };
+  if (since) query.created_at = `gte.${since}`;
+  if (statuses?.length) query.status = `in.(${statuses.join(',')})`;
+  return selectRows('living_agent_jobs', query);
+}
+
+export async function claimJob(workerId, lockSeconds = 120) {
+  const rows = await supabaseRpc('claim_living_agent_job', {
+    worker_id: workerId,
+    lock_seconds: lockSeconds,
+  });
+  return rows?.[0] || null;
+}
+
+export async function completeJob(jobId, output = {}) {
+  const rows = await updateRows('living_agent_jobs', { id: `eq.${jobId}` }, {
+    status: 'succeeded',
+    output,
+    locked_by: null,
+    locked_until: null,
+    completed_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+  return rows?.[0] || null;
+}
+
+export async function failJob(jobId, error, retryAt = null) {
+  const rows = await updateRows('living_agent_jobs', { id: `eq.${jobId}` }, {
+    status: 'failed',
+    error: error?.message || String(error),
+    locked_by: null,
+    locked_until: null,
+    run_after: retryAt,
+    updated_at: new Date().toISOString(),
+  });
+  return rows?.[0] || null;
 }
 
 export async function addPrivateMemory(agentId, text, source = 'manual') {
@@ -283,4 +433,14 @@ export async function latestAgentActivityAt(agentId) {
   const timestamps = results.flat().map(row => row.created_at).filter(Boolean);
   if (!timestamps.length) return null;
   return timestamps.sort((a, b) => new Date(b) - new Date(a))[0];
+}
+
+export async function latestAgentRowAt(table, agentId) {
+  const rows = await selectRows(table, {
+    select: 'created_at',
+    agent_id: `eq.${agentId}`,
+    order: 'created_at.desc',
+    limit: 1,
+  });
+  return rows?.[0]?.created_at || null;
 }
