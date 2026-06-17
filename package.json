@@ -1,0 +1,21 @@
+{
+  "name": "agent-village",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agent-village": "./bin/agent-village"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/api.js",
+    "agent-village": "node bin/agent-village",
+    "daemon:identity": "node bin/agent-village daemon identity",
+    "check": "node --check bin/agent-village && node --check src/api.js && node --check src/cli.js && node --check src/config.js && node --check src/db.js && node --check src/openai.js && node --check src/prompts.js && node --check src/service.js"
+  },
+  "dependencies": {
+    "openai": "^6.44.0"
+  }
+}
