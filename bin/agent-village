@@ -1,0 +1,12 @@
+#!/usr/bin/env node
+import { main } from '../src/cli.js';
+
+main(process.argv.slice(2)).catch(error => {
+  const message = error?.message || String(error);
+  const code = error?.code || 'error';
+  console.error(`${code}: ${message}`);
+  if (process.env.AGENT_VILLAGE_DEBUG && error?.stack) {
+    console.error(error.stack);
+  }
+  process.exit(error?.exitCode || 1);
+});
