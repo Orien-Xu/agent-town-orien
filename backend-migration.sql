@@ -123,6 +123,23 @@ CREATE INDEX IF NOT EXISTS idx_living_agent_jobs_queue
 CREATE INDEX IF NOT EXISTS idx_living_agent_jobs_agent ON living_agent_jobs(agent_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_living_agent_jobs_event ON living_agent_jobs(input_event_id);
 
+CREATE TABLE IF NOT EXISTS living_tasks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id UUID NOT NULL REFERENCES living_agents(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'planning' CHECK (state IN ('planning', 'in_progress', 'completed', 'error')),
+    events JSONB NOT NULL DEFAULT '[]'::jsonb,
+    is_public BOOLEAN NOT NULL DEFAULT false,
+    media_url TEXT,
+    source_context TEXT NOT NULL DEFAULT 'chat',
+    source_conversation_id UUID REFERENCES living_conversations(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_living_tasks_agent ON living_tasks(agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_living_tasks_state ON living_tasks(agent_id, state, created_at DESC);
+
 CREATE OR REPLACE FUNCTION claim_living_agent_job(worker_id TEXT, lock_seconds INTEGER DEFAULT 120)
 RETURNS SETOF living_agent_jobs
 LANGUAGE plpgsql
@@ -167,6 +184,7 @@ ALTER TABLE living_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE living_agent_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE living_event_subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE living_agent_jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE living_tasks ENABLE ROW LEVEL SECURITY;
 
 -- Tighten broad starter write policies so only the service role can mutate data.
 DROP POLICY IF EXISTS "service_all_agents" ON living_agents;
@@ -183,6 +201,8 @@ DROP POLICY IF EXISTS "service_all_messages" ON living_messages;
 DROP POLICY IF EXISTS "service_all_agent_events" ON living_agent_events;
 DROP POLICY IF EXISTS "service_all_event_subscriptions" ON living_event_subscriptions;
 DROP POLICY IF EXISTS "service_all_agent_jobs" ON living_agent_jobs;
+DROP POLICY IF EXISTS "anon_read_tasks" ON living_tasks;
+DROP POLICY IF EXISTS "service_all_tasks" ON living_tasks;
 
 CREATE POLICY "service_all_agents" ON living_agents FOR ALL USING (auth.role() = 'service_role') WITH CHECK (auth.role() = 'service_role');
 CREATE POLICY "service_all_skills" ON living_skills FOR ALL USING (auth.role() = 'service_role') WITH CHECK (auth.role() = 'service_role');
@@ -198,3 +218,5 @@ CREATE POLICY "service_all_messages" ON living_messages FOR ALL USING (auth.role
 CREATE POLICY "service_all_agent_events" ON living_agent_events FOR ALL USING (auth.role() = 'service_role') WITH CHECK (auth.role() = 'service_role');
 CREATE POLICY "service_all_event_subscriptions" ON living_event_subscriptions FOR ALL USING (auth.role() = 'service_role') WITH CHECK (auth.role() = 'service_role');
 CREATE POLICY "service_all_agent_jobs" ON living_agent_jobs FOR ALL USING (auth.role() = 'service_role') WITH CHECK (auth.role() = 'service_role');
+CREATE POLICY "anon_read_tasks" ON living_tasks FOR SELECT USING (true);
+CREATE POLICY "service_all_tasks" ON living_tasks FOR ALL USING (auth.role() = 'service_role') WITH CHECK (auth.role() = 'service_role');

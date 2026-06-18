@@ -74,6 +74,12 @@ npm start
 
 The API listens on `http://localhost:8787` by default. `index.html` is wired to that URL through `BACKEND_URL`, so the home chat CTA uses `/chat/owner` and room chat uses `/chat/stranger`. Owner chat prompts for the agent key and stores it in browser local storage for the demo.
 
+Chat history is persisted in `living_conversations` and `living_messages`; reopening a DM reloads recent backend messages. If a chat message explicitly asks an agent to create/start/queue a task, the backend writes a public-safe `living_tasks` card when that table exists, enqueues a `run_task` job, and returns a small action trace that the UI shows after the agent reply. Run the worker to process queued task jobs:
+
+```bash
+node bin/agent-village worker --once
+```
+
 For proactive behavior, run the scheduler and worker in separate terminals:
 
 ```bash
@@ -116,6 +122,14 @@ curl -X POST http://localhost:8787/chat/owner \
   -H 'Content-Type: application/json' \
   -d '{"agent_key":"sq_sample_agent_1","message":"Remember that my wife loves orchids."}'
 
+curl -X POST http://localhost:8787/chat/owner/history \
+  -H 'Content-Type: application/json' \
+  -d '{"agent_key":"sq_sample_agent_1","limit":20}'
+
+curl -X POST http://localhost:8787/chat/owner \
+  -H 'Content-Type: application/json' \
+  -d '{"agent_key":"sq_sample_agent_1","message":"Create a task to draft a public telescope update."}'
+
 curl -X POST http://localhost:8787/chat/stranger \
   -H 'Content-Type: application/json' \
   -d '{"agent_id":"a1a1a1a1-0000-0000-0000-000000000001","message":"What does your owner like?"}'
@@ -126,6 +140,7 @@ curl -X POST http://localhost:8787/agents/a1a1a1a1-0000-0000-0000-000000000001/e
 
 curl http://localhost:8787/events?visibility=public
 curl http://localhost:8787/jobs?status=queued
+curl http://localhost:8787/agents/a1a1a1a1-0000-0000-0000-000000000001/tasks
 
 curl -X POST http://localhost:8787/subscriptions/seed
 ```

@@ -92,6 +92,55 @@ export async function updateRows(table, query, patch) {
   });
 }
 
+export async function getTaskById(taskId) {
+  if (!taskId) return null;
+  const rows = await selectRows('living_tasks', {
+    select: '*',
+    id: `eq.${taskId}`,
+    limit: 1,
+  });
+  return rows?.[0] || null;
+}
+
+export async function listTasks({ agentId, limit = 20 } = {}) {
+  const query = {
+    select: '*',
+    order: 'created_at.desc',
+    limit,
+  };
+  if (agentId) query.agent_id = `eq.${agentId}`;
+  return selectRows('living_tasks', query);
+}
+
+export async function createTask({ agentId, title, context = 'chat', conversationId = null, events = [] }) {
+  return insertRow('living_tasks', {
+    agent_id: agentId,
+    title,
+    state: 'planning',
+    events,
+    source_context: context,
+    source_conversation_id: conversationId,
+  });
+}
+
+export async function updateTask(taskId, patch) {
+  const rows = await updateRows('living_tasks', { id: `eq.${taskId}` }, {
+    ...patch,
+    updated_at: new Date().toISOString(),
+  });
+  return rows?.[0] || null;
+}
+
+export async function appendTaskEvent(taskId, event, patch = {}) {
+  const task = await getTaskById(taskId);
+  if (!task) return null;
+  const events = Array.isArray(task.events) ? task.events : [];
+  return updateTask(taskId, {
+    ...patch,
+    events: [...events, event],
+  });
+}
+
 export async function listRecentRows(table, query, limit = 20) {
   return selectRows(table, {
     select: '*',
@@ -296,6 +345,14 @@ export async function writeActivityEvent(agentId, text, type = 'status_update') 
     agent_id: agentId,
     event_type: type,
     content: text,
+  });
+}
+
+export async function addSkill(agentId, { category = null, description }) {
+  return insertRow('living_skills', {
+    agent_id: agentId,
+    category,
+    description,
   });
 }
 

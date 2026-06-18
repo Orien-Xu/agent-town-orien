@@ -581,12 +581,21 @@ body{
 .msg{margin-bottom:12px;display:flex;flex-direction:column}
 .msg.from-them{align-items:flex-start}
 .msg.from-me{align-items:flex-end}
+.msg.system{align-items:center}
 .msg-bubble{
   max-width:75%;padding:10px 14px;border-radius:18px;
   font-size:14px;line-height:1.4;
 }
 .msg.from-them .msg-bubble{background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.9);border-radius:4px 18px 18px 18px}
 .msg.from-me .msg-bubble{background:#818cf8;color:#fff;border-radius:18px 4px 18px 18px}
+.msg.system .msg-bubble{
+  max-width:86%;
+  background:rgba(129,140,248,0.12);
+  border:1px solid rgba(129,140,248,0.22);
+  color:rgba(255,255,255,0.7);
+  border-radius:12px;
+  font-size:12px;
+}
 .msg-time{font-size:10px;color:rgba(255,255,255,0.25);margin-top:4px;padding:0 4px}
 @keyframes typingPulse{0%,100%{opacity:0.35}50%{opacity:1}}
 .typing-indicator{display:none;align-items:flex-start;margin-bottom:12px;flex-direction:column}
@@ -696,7 +705,14 @@ body{
 #room{display:none;position:fixed;top:0;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:430px;z-index:500;background:#090909;overflow-y:scroll;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;touch-action:pan-y;will-change:transform,opacity;}
 .room-video-sticky{position:sticky;top:0;width:100%;aspect-ratio:2.5/4;z-index:0;overflow:hidden;flex-shrink:0;touch-action:pan-y;cursor:grab;}
 .room-video-sticky:active{cursor:grabbing;}
-.room-video-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center center;transform-origin:center;will-change:filter,transform;pointer-events:none;}
+.room-video-bg{
+  position:absolute;inset:0;width:100%;height:100%;
+  object-fit:cover;
+  object-position:center top;
+  transform-origin:center;
+  will-change:filter,transform;
+  pointer-events:none;
+}
 .room-vignette{position:absolute;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,0.35) 0%,transparent 22%,transparent 35%,rgba(0,0,0,0.45) 55%,rgba(0,0,0,0.82) 75%,rgba(0,0,0,0.95) 100%);pointer-events:none;}
 /* scroll-driven darkening overlay on top of video */
 .room-scroll-overlay{position:absolute;inset:0;background:rgba(0,0,0,0);pointer-events:none;z-index:1;transition:background 0.05s linear;}
@@ -1425,6 +1441,7 @@ const scrollToBottom = el => { if (el) el.scrollTop = el.scrollHeight; return el
 const TYPING_HTML = '<div class="typing-indicator" id="typingIndicator"><div class="typing-dots"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div></div>';
 
 let _chat = { agent: null, context: 'stranger', sending: false };
+let _chatLoadSeq = 0;
 
 const backendBaseUrl = () => (BACKEND_URL || '').replace(/\/+$/, '');
 const backendConfigured = () => backendBaseUrl() && !backendBaseUrl().includes('YOUR_');
@@ -1478,9 +1495,60 @@ function appendDmMessage(side, text) {
   scrollToBottom(el);
 }
 
+function renderHistoryMessages(messages) {
+  if (!Array.isArray(messages) || !messages.length) return '';
+  return messages.map(message => {
+    const side = message.role === 'user' ? 'from-me' : message.role === 'system' ? 'system' : 'from-them';
+    return dmMessageHtml(side, message.text, message.created_at);
+  }).join('');
+}
+
 function renderBackendIntro(agent, context) {
   const label = context === 'owner' ? 'Owner channel' : 'Visitor channel';
   setDmMessages(`<div style="text-align:center;opacity:0.45;padding:24px;font-size:13px;line-height:1.6">${esc(label)} connected to the local Agent Village backend.</div>`);
+}
+
+function actionTraceText(action) {
+  if (!action) return '';
+  if (action.type === 'private_memory_recorded') return 'memory: private owner note stored';
+  if (action.type === 'task_created') return `task: ${action.title || 'created'} (${action.state || 'planning'})`;
+  if (action.type === 'task_pending_schema') return `task queued: ${action.title || 'task'}; run backend-migration.sql for task cards`;
+  if (action.type === 'job_queued') return `queued job: ${action.job_type || 'worker'}${action.job_id ? ` (${String(action.job_id).slice(0, 8)})` : ''}`;
+  if (action.type === 'event_published') return `event: ${action.event_type || 'recorded'}${action.visibility ? ` [${action.visibility}]` : ''}`;
+  return action.label || action.detail || '';
+}
+
+function appendActionTrace(actions) {
+  (actions || [])
+    .map(actionTraceText)
+    .filter(Boolean)
+    .forEach(text => appendDmMessage('system', text));
+}
+
+async function loadBackendChatHistory(session) {
+  if (CHAT_MODE === 'mock' || !backendConfigured() || !session.agent?.id) return;
+  const seq = ++_chatLoadSeq;
+  const isOwner = session.context === 'owner';
+  const ownerKey = isOwner ? getOwnerAgentKey(session.agent) : null;
+  if (isOwner && !ownerKey) return;
+
+  try {
+    const response = await fetch(`${backendBaseUrl()}${isOwner ? '/chat/owner/history' : '/chat/stranger/history'}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(isOwner
+        ? { agent_key: ownerKey, owner_id: getGuestId(), limit: 80 }
+        : { agent_id: session.agent.id, visitor_id: getGuestId(), limit: 80 }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error?.message || `History failed with HTTP ${response.status}`);
+    if (seq !== _chatLoadSeq || _chat.agent?.id !== session.agent.id || _chat.context !== session.context) return;
+    const html = renderHistoryMessages(data.messages);
+    if (html) setDmMessages(html);
+  } catch (error) {
+    console.warn('Backend chat history error:', error);
+    if (seq === _chatLoadSeq) appendDmMessage('system', `history unavailable: ${error.message}`);
+  }
 }
 
 function mockMemoryKey(agent) {
@@ -1915,12 +1983,13 @@ function renderGrid() {
     return;
   }
   grid.innerHTML = agents.map((a, idx) => {
-    const hasMedia = a.window_video_url || a.window_image_url;
+    const mediaUrl = a.window_video_url || a.window_image_url || a.room_image_url || '';
+    const hasMedia = Boolean(mediaUrl);
     const media = a.window_video_url
       ? `<video src="${esc(a.window_video_url)}" autoplay muted loop playsinline webkit-playsinline></video>`
-      : a.window_image_url
-        ? `<img src="${esc(a.window_image_url)}" alt="${esc(a.name)}" loading="lazy">`
-        : `<div class="generating-placeholder"><div class="gen-spinner"></div><span>generating…</span></div>`;
+      : mediaUrl
+        ? `<img src="${esc(mediaUrl)}" alt="${esc(a.name)}" loading="lazy" style="object-fit:${a.window_image_url ? 'cover' : 'contain'};object-position:center center;background:#090909">`
+        : `<div class="generating-placeholder"><div class="gen-spinner"></div><span>loading…</span></div>`;
     const roomNum = a.room_number || (Math.floor(idx / 10) + 1) * 100 + (idx % 10) + 1;
     const stats = agentStats[a.id] || {};
     const total = (stats.skills||0) + (stats.logs||0) + (stats.memories||0);
@@ -1960,10 +2029,11 @@ async function openThread(agent, idx) {
 
   // Window preview
   const preview = document.getElementById('threadWindowPreview');
+  const previewMediaUrl = agent.window_video_url || agent.window_image_url || agent.room_image_url || '';
   const media = agent.window_video_url
     ? `<video src="${esc(agent.window_video_url)}" autoplay muted loop playsinline webkit-playsinline></video>`
-    : agent.window_image_url
-      ? `<img src="${esc(agent.window_image_url)}" alt="">`
+    : previewMediaUrl
+      ? `<img src="${esc(previewMediaUrl)}" alt="" style="object-fit:${agent.window_image_url ? 'cover' : 'contain'};object-position:center center;background:#090909">`
       : '';
   if (media) {
     preview.innerHTML = media + `<div class="thread-window-preview-overlay"><span class="thread-room-num">Room ${roomNum}</span></div>`;
@@ -2058,6 +2128,9 @@ async function renderHomeTab() {
   } else if (me.room_image_url) {
     img.src = me.room_image_url;
     img.style.display = '';
+    img.style.objectFit = 'contain';
+    img.style.objectPosition = 'center center';
+    img.style.background = '#090909';
     vid.style.display = 'none';
   }
 
@@ -2442,6 +2515,7 @@ function openDmChat(idx, opts = {}) {
   const context = header === 'home' ? 'owner' : 'stranger';
   _chat = { agent: a, context, sending: false };
   renderBackendIntro(a, context);
+  loadBackendChatHistory(_chat);
   document.getElementById('dmChat').classList.add('active');
 }
 
@@ -2452,6 +2526,7 @@ function closeDmChat() {
   if (homeHdr) homeHdr.style.display = 'none';
   if (defHdr) defHdr.style.display = '';
   currentDmIdx = null;
+  _chatLoadSeq += 1;
   teardownChat();
 }
 
@@ -2468,8 +2543,12 @@ async function sendDm() {
     const result = await postBackendChat(_chat, text);
     hideTyping();
     appendDmMessage('from-them', result.message || '(no reply returned)');
+    appendActionTrace(result.actions);
     // A chat turn may produce a public diary/feed write or enqueue proactive work — surface it.
     refreshFeed();
+    if (result.actions?.some(action => action.type === 'task_created' || action.job_type === 'run_task')) {
+      renderHomeTab();
+    }
   } catch (err) {
     hideTyping();
     console.error('Backend chat error:', err);
@@ -2504,6 +2583,9 @@ async function showRoom(agent, triggerEl) {
   if (agent.room_image_url) {
     imgFallback.src = agent.room_image_url;
     imgFallback.style.display = 'block';
+    imgFallback.style.objectFit = 'contain';
+    imgFallback.style.objectPosition = 'center center';
+    imgFallback.style.background = '#090909';
     imgFallback.style.opacity = '1';
   } else {
     imgFallback.style.display = 'none';
@@ -3084,6 +3166,40 @@ function toggleSound() {
   if (hdrSnd) hdrSnd.innerHTML = icon;
 }
 
+// Skill "Try Now" → open a visitor chat and ask the agent to demonstrate the skill.
+function tryAgentSkill(btn) {
+  const agent = currentAgent || agents[0];
+  if (!agent) return;
+  const skill = btn?.dataset?.skill || 'your skill';
+  openDmChatForAgent(agent); // stranger/visitor context — no owner key needed
+  const input = document.getElementById('dmInput');
+  if (input) input.value = `Can you show me your "${skill}" skill in action?`;
+  sendDm();
+}
+
+// Skill "Discover Skills" → have the agent generate a new skill via the backend, then refresh.
+async function discoverAgentSkill(btn) {
+  const agent = currentAgent || agents[0];
+  if (!agent) return;
+  if (!backendConfigured()) { alert('Set BACKEND_URL to your local API server to discover skills.'); return; }
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ph ph-circle-notch"></i> Discovering…';
+  try {
+    const r = await fetch(`${backendBaseUrl()}/agents/${agent.id}/skills/discover`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error?.message || `HTTP ${r.status}`);
+    await openPanel('skills'); // re-render the panel with the new skill (replaces this button)
+    refreshFeed();             // new skill also lands in the public feed
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = original;
+    alert('Discover failed: ' + e.message);
+  }
+}
+
 async function openPanel(type, triggerEl) {
   const a = currentAgent || agents[0];
   if (!a) return;
@@ -3151,12 +3267,12 @@ async function openPanel(type, triggerEl) {
             <div class="skill-list-info">
               <div class="skill-list-name">${esc(title)}</div>
               <div class="skill-list-desc">${esc(desc !== title ? desc : '')}</div>
-              <button class="skill-list-try">Try Now</button>
+              <button class="skill-list-try" data-skill="${esc(title)}" onclick="tryAgentSkill(this)">Try Now</button>
             </div>
             <div class="skill-list-icon"><i class="ph ${icon}" style="font-size:28px;color:rgba(255,255,255,0.7)"></i></div>
           </div>`;
         }).join('')}</div>`;
-      html += `<div style="padding:20px 16px 28px"><button style="width:100%;height:52px;border-radius:50px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px"><i class="ph ph-compass" style="font-size:20px"></i>Discover Skills</button></div>`;
+      html += `<div style="padding:20px 16px 28px"><button onclick="discoverAgentSkill(this)" style="width:100%;height:52px;border-radius:50px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px"><i class="ph ph-compass" style="font-size:20px"></i>Discover Skills</button></div>`;
     }
   } else if (type === 'tasks') {
     html = await renderTasksPanel(a);
@@ -3216,9 +3332,16 @@ function startTaskTimers() {
 async function renderTasksPanel(agent) {
   let tasks = [];
   try {
+    if (agent.id && backendConfigured() && CHAT_MODE !== 'mock') {
+      const backendTasks = await fetch(`${backendBaseUrl()}/agents/${agent.id}/tasks?limit=20`);
+      if (backendTasks.ok) {
+        const data = await backendTasks.json();
+        tasks = data.tasks || [];
+      }
+    }
     if (agent.id) {
       const r = await fetch(`${SUPABASE}/living_tasks?agent_id=eq.${agent.id}&select=*&order=created_at.desc&limit=20`, { headers: H });
-      if (r.ok) tasks = await r.json();
+      if (r.ok && !tasks.length) tasks = await r.json();
     }
   } catch(e) {}
 
