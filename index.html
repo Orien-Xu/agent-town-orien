@@ -577,16 +577,39 @@ body{
 .dm-chat-info{flex:1}
 .dm-chat-name{font-size:15px;font-weight:500}
 .dm-chat-status{font-size:11px;color:#4ade80}
+.dm-channel-bar{display:flex;align-items:center;gap:6px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02);font-size:11px;font-weight:600;color:rgba(255,255,255,0.5)}
+/* top-bar global identity pill */
+.identity-pill{display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 13px;border-radius:16px;border:1px solid rgba(255,255,255,0.18);background:rgba(0,0,0,0.25);color:rgba(255,255,255,0.85);font-size:12px;font-weight:700;font-family:inherit;cursor:pointer;white-space:nowrap}
+.identity-pill.owner{background:#c4b5fd;border-color:#c4b5fd;color:#1a0050}
+.owner-login-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);backdrop-filter:blur(4px)}
+.owner-login-overlay.active{display:flex}
+.owner-login-card{width:300px;max-width:88vw;background:#15131f;border:1px solid rgba(255,255,255,0.12);border-radius:18px;padding:22px 20px;display:flex;flex-direction:column;gap:12px}
+.owner-login-card h3{margin:0;font-size:16px;color:#fff}
+.owner-login-card p{margin:0;font-size:12px;line-height:1.5;color:rgba(255,255,255,0.5)}
+.owner-login-card input{height:42px;border-radius:12px;border:1px solid rgba(255,255,255,0.16);background:rgba(255,255,255,0.05);color:#fff;font-size:14px;font-family:inherit;padding:0 14px}
+.owner-login-err{font-size:12px;color:#fca5a5;min-height:14px}
+.owner-login-actions{display:flex;gap:8px;justify-content:flex-end}
+.owner-login-actions button{height:38px;padding:0 16px;border-radius:10px;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;border:1px solid rgba(255,255,255,0.16);background:transparent;color:#fff}
+.owner-login-actions button.primary{background:#c4b5fd;border-color:#c4b5fd;color:#1a0050}
 .dm-messages{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px}
 .msg{margin-bottom:12px;display:flex;flex-direction:column}
 .msg.from-them{align-items:flex-start}
 .msg.from-me{align-items:flex-end}
+.msg.system{align-items:center}
 .msg-bubble{
   max-width:75%;padding:10px 14px;border-radius:18px;
   font-size:14px;line-height:1.4;
 }
 .msg.from-them .msg-bubble{background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.9);border-radius:4px 18px 18px 18px}
 .msg.from-me .msg-bubble{background:#818cf8;color:#fff;border-radius:18px 4px 18px 18px}
+.msg.system .msg-bubble{
+  max-width:86%;
+  background:rgba(129,140,248,0.12);
+  border:1px solid rgba(129,140,248,0.22);
+  color:rgba(255,255,255,0.7);
+  border-radius:12px;
+  font-size:12px;
+}
 .msg-time{font-size:10px;color:rgba(255,255,255,0.25);margin-top:4px;padding:0 4px}
 @keyframes typingPulse{0%,100%{opacity:0.35}50%{opacity:1}}
 .typing-indicator{display:none;align-items:flex-start;margin-bottom:12px;flex-direction:column}
@@ -696,7 +719,14 @@ body{
 #room{display:none;position:fixed;top:0;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:430px;z-index:500;background:#090909;overflow-y:scroll;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;touch-action:pan-y;will-change:transform,opacity;}
 .room-video-sticky{position:sticky;top:0;width:100%;aspect-ratio:2.5/4;z-index:0;overflow:hidden;flex-shrink:0;touch-action:pan-y;cursor:grab;}
 .room-video-sticky:active{cursor:grabbing;}
-.room-video-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center center;transform-origin:center;will-change:filter,transform;pointer-events:none;}
+.room-video-bg{
+  position:absolute;inset:0;width:100%;height:100%;
+  object-fit:cover;
+  object-position:center top;
+  transform-origin:center;
+  will-change:filter,transform;
+  pointer-events:none;
+}
 .room-vignette{position:absolute;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,0.35) 0%,transparent 22%,transparent 35%,rgba(0,0,0,0.45) 55%,rgba(0,0,0,0.82) 75%,rgba(0,0,0,0.95) 100%);pointer-events:none;}
 /* scroll-driven darkening overlay on top of video */
 .room-scroll-overlay{position:absolute;inset:0;background:rgba(0,0,0,0);pointer-events:none;z-index:1;transition:background 0.05s linear;}
@@ -1115,6 +1145,7 @@ body.explore-active #room .room-content-layer{display:none !important;}
         <div class="home-tab-btns">
           <button class="home-tab-btn" onclick="openPanel('tasks', this)"><i class="ph ph-check-circle"></i>Tasks <span class="home-tab-badge" id="homeTasksCount">0</span></button>
           <button class="home-tab-btn" onclick="openPanel('skills', this)"><i class="ph ph-diamond"></i>Skills <span class="home-tab-badge" id="homeSkillsCount" style="display:none">0</span></button>
+          <button class="identity-pill" id="identityPill" onclick="onIdentityPillClick()" title="Switch between owner and visitor"><i class="ph ph-mask-happy"></i>Visitor · Log in</button>
         </div>
       </div>
       <!-- diary float button -->
@@ -1339,10 +1370,25 @@ body.explore-active #room .room-content-layer{display:none !important;}
         <div class="dm-chat-status">online</div>
       </div>
     </div>
+    <div class="dm-channel-bar"><i class="ph ph-shield-check"></i><span id="dmChannelBadge">Visitor channel</span></div>
     <div class="dm-messages" id="dmMessages"></div>
     <div class="dm-input-bar">
       <input class="dm-input" id="dmInput" placeholder="Message…" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
       <button class="dm-send" onclick="sendDm()">↑</button>
+    </div>
+  </div>
+
+  <!-- ===== OWNER LOGIN MODAL (global identity) ===== -->
+  <div class="owner-login-overlay" id="ownerLoginModal">
+    <div class="owner-login-card">
+      <h3>Log in as owner</h3>
+      <p>Owners get full trust: private memories, recall, and personal context. Without logging in you talk to agents as a visitor.</p>
+      <input id="ownerLoginInput" type="password" placeholder="Owner passcode" autocomplete="off" onkeydown="if(event.key==='Enter')submitOwnerLogin()">
+      <div class="owner-login-err" id="ownerLoginError"></div>
+      <div class="owner-login-actions">
+        <button onclick="closeOwnerLogin()">Cancel</button>
+        <button class="primary" onclick="submitOwnerLogin()">Log in</button>
+      </div>
     </div>
   </div>
 
@@ -1425,6 +1471,7 @@ const scrollToBottom = el => { if (el) el.scrollTop = el.scrollHeight; return el
 const TYPING_HTML = '<div class="typing-indicator" id="typingIndicator"><div class="typing-dots"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div></div>';
 
 let _chat = { agent: null, context: 'stranger', sending: false };
+let _chatLoadSeq = 0;
 
 const backendBaseUrl = () => (BACKEND_URL || '').replace(/\/+$/, '');
 const backendConfigured = () => backendBaseUrl() && !backendBaseUrl().includes('YOUR_');
@@ -1439,14 +1486,86 @@ const getGuestId = () => {
   return id;
 };
 
-function getOwnerAgentKey(agent) {
-  const storageKey = `agent_village_owner_key_${agent.id}`;
-  let key = localStorage.getItem(storageKey);
-  if (!key) {
-    key = window.prompt(`Owner key for ${agent.name}`);
-    if (key) localStorage.setItem(storageKey, key.trim());
+// ===== GLOBAL OWNER SESSION =====
+// Identity is global: one passcode logs you in as owner of every agent. How you
+// interact with any agent is derived from this, not from a per-conversation key.
+const OWNER_TOKEN_KEY = 'agent_village_owner_token';
+const getOwnerToken = () => localStorage.getItem(OWNER_TOKEN_KEY) || '';
+const isOwnerMode  = () => !!getOwnerToken();
+const setOwnerToken = (t) => localStorage.setItem(OWNER_TOKEN_KEY, t);
+const clearOwnerToken = () => localStorage.removeItem(OWNER_TOKEN_KEY);
+
+// Reflect the current identity in the top-bar pill.
+function updateIdentityPill() {
+  const pill = document.getElementById('identityPill');
+  if (!pill) return;
+  const owner = isOwnerMode();
+  pill.classList.toggle('owner', owner);
+  pill.innerHTML = owner
+    ? '<i class="ph ph-user-circle-check"></i>Owner · Log out'
+    : '<i class="ph ph-mask-happy"></i>Visitor · Log in';
+}
+
+function onIdentityPillClick() {
+  if (isOwnerMode()) ownerLogout();
+  else openOwnerLogin();
+}
+
+function openOwnerLogin() {
+  const m = document.getElementById('ownerLoginModal');
+  if (!m) return;
+  document.getElementById('ownerLoginError').textContent = '';
+  const input = document.getElementById('ownerLoginInput');
+  input.value = '';
+  m.classList.add('active');
+  setTimeout(() => input.focus(), 50);
+}
+
+function closeOwnerLogin() {
+  document.getElementById('ownerLoginModal')?.classList.remove('active');
+}
+
+async function submitOwnerLogin() {
+  const input = document.getElementById('ownerLoginInput');
+  const errEl = document.getElementById('ownerLoginError');
+  const passcode = (input.value || '').trim();
+  if (!passcode) { errEl.textContent = 'Enter the owner passcode.'; return; }
+  if (!backendConfigured()) { errEl.textContent = 'Backend not configured.'; return; }
+  try {
+    const r = await fetch(`${backendBaseUrl()}/auth/owner`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passcode }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.ok) throw new Error(data.error?.message || 'Wrong passcode.');
+    setOwnerToken(data.token);
+    closeOwnerLogin();
+    applyIdentityChange();
+  } catch (e) {
+    errEl.textContent = e.message;
   }
-  return key?.trim() || '';
+}
+
+function ownerLogout() {
+  clearOwnerToken();
+  applyIdentityChange();
+}
+
+// After login/logout: refresh the pill and re-derive any open chat's trust context.
+function applyIdentityChange() {
+  updateIdentityPill();
+  if (_chat.agent) {
+    _chat.context = isOwnerMode() ? 'owner' : 'stranger';
+    updateChannelBadge();
+    renderBackendIntro(_chat.agent, _chat.context);
+    loadBackendChatHistory(_chat);
+  }
+}
+
+// Read-only badge showing the active channel inside an open chat.
+function updateChannelBadge() {
+  const b = document.getElementById('dmChannelBadge');
+  if (b) b.textContent = _chat.context === 'owner' ? 'Owner channel' : 'Visitor channel';
 }
 
 const showTyping = () => {
@@ -1478,9 +1597,59 @@ function appendDmMessage(side, text) {
   scrollToBottom(el);
 }
 
+function renderHistoryMessages(messages) {
+  if (!Array.isArray(messages) || !messages.length) return '';
+  return messages.map(message => {
+    const side = message.role === 'user' ? 'from-me' : message.role === 'system' ? 'system' : 'from-them';
+    return dmMessageHtml(side, message.text, message.created_at);
+  }).join('');
+}
+
 function renderBackendIntro(agent, context) {
   const label = context === 'owner' ? 'Owner channel' : 'Visitor channel';
   setDmMessages(`<div style="text-align:center;opacity:0.45;padding:24px;font-size:13px;line-height:1.6">${esc(label)} connected to the local Agent Village backend.</div>`);
+}
+
+function actionTraceText(action) {
+  if (!action) return '';
+  if (action.type === 'private_memory_recorded') return 'memory: private owner note stored';
+  if (action.type === 'task_created') return `task: ${action.title || 'created'} (${action.state || 'planning'})`;
+  if (action.type === 'task_pending_schema') return `task queued: ${action.title || 'task'}; run backend-migration.sql for task cards`;
+  if (action.type === 'job_queued') return `queued job: ${action.job_type || 'worker'}${action.job_id ? ` (${String(action.job_id).slice(0, 8)})` : ''}`;
+  if (action.type === 'event_published') return `event: ${action.event_type || 'recorded'}${action.visibility ? ` [${action.visibility}]` : ''}`;
+  return action.label || action.detail || '';
+}
+
+function appendActionTrace(actions) {
+  (actions || [])
+    .map(actionTraceText)
+    .filter(Boolean)
+    .forEach(text => appendDmMessage('system', text));
+}
+
+async function loadBackendChatHistory(session) {
+  if (CHAT_MODE === 'mock' || !backendConfigured() || !session.agent?.id) return;
+  const seq = ++_chatLoadSeq;
+  const isOwner = session.context === 'owner';
+  if (isOwner && !isOwnerMode()) return;
+
+  try {
+    const response = await fetch(`${backendBaseUrl()}${isOwner ? '/chat/owner/history' : '/chat/stranger/history'}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(isOwner
+        ? { agent_id: session.agent.id, owner_token: getOwnerToken(), owner_id: getGuestId(), limit: 80 }
+        : { agent_id: session.agent.id, visitor_id: getGuestId(), limit: 80 }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error?.message || `History failed with HTTP ${response.status}`);
+    if (seq !== _chatLoadSeq || _chat.agent?.id !== session.agent.id || _chat.context !== session.context) return;
+    const html = renderHistoryMessages(data.messages);
+    if (html) setDmMessages(html);
+  } catch (error) {
+    console.warn('Backend chat history error:', error);
+    if (seq === _chatLoadSeq) appendDmMessage('system', `history unavailable: ${error.message}`);
+  }
 }
 
 function mockMemoryKey(agent) {
@@ -1538,10 +1707,9 @@ async function postBackendChat(session, text) {
   if (!session.agent?.id) throw new Error('No agent is selected.');
 
   const isOwner = session.context === 'owner';
-  const ownerKey = isOwner ? getOwnerAgentKey(session.agent) : null;
-  if (isOwner && !ownerKey) {
-    if (ENABLE_MOCK_CHAT_FALLBACK) return mockChatResponse(session, text, 'missing_owner_key');
-    throw new Error('Owner chat requires an agent key.');
+  if (isOwner && !isOwnerMode()) {
+    if (ENABLE_MOCK_CHAT_FALLBACK) return mockChatResponse(session, text, 'not_owner');
+    throw new Error('Log in as owner to use the owner channel.');
   }
 
   let response;
@@ -1550,7 +1718,7 @@ async function postBackendChat(session, text) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(isOwner
-        ? { agent_key: ownerKey, owner_id: getGuestId(), message: text }
+        ? { agent_id: session.agent.id, owner_token: getOwnerToken(), owner_id: getGuestId(), message: text }
         : { agent_id: session.agent.id, visitor_id: getGuestId(), message: text }),
     });
   } catch (error) {
@@ -1559,9 +1727,10 @@ async function postBackendChat(session, text) {
   }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    // A wrong owner key would otherwise stay cached and silently fail forever — clear it so the next send re-prompts.
-    if (isOwner && (response.status === 401 || response.status === 403 || response.status === 404)) {
-      localStorage.removeItem(`agent_village_owner_key_${session.agent.id}`);
+    // A rejected owner session (expired/changed passcode) drops you back to visitor.
+    if (isOwner && response.status === 401) {
+      clearOwnerToken();
+      applyIdentityChange();
     }
     throw new Error(data.error?.message || `Chat failed with HTTP ${response.status}`);
   }
@@ -1915,12 +2084,13 @@ function renderGrid() {
     return;
   }
   grid.innerHTML = agents.map((a, idx) => {
-    const hasMedia = a.window_video_url || a.window_image_url;
+    const mediaUrl = a.window_video_url || a.window_image_url || a.room_image_url || '';
+    const hasMedia = Boolean(mediaUrl);
     const media = a.window_video_url
       ? `<video src="${esc(a.window_video_url)}" autoplay muted loop playsinline webkit-playsinline></video>`
-      : a.window_image_url
-        ? `<img src="${esc(a.window_image_url)}" alt="${esc(a.name)}" loading="lazy">`
-        : `<div class="generating-placeholder"><div class="gen-spinner"></div><span>generating…</span></div>`;
+      : mediaUrl
+        ? `<img src="${esc(mediaUrl)}" alt="${esc(a.name)}" loading="lazy" style="object-fit:${a.window_image_url ? 'cover' : 'contain'};object-position:center center;background:#090909">`
+        : `<div class="generating-placeholder"><div class="gen-spinner"></div><span>loading…</span></div>`;
     const roomNum = a.room_number || (Math.floor(idx / 10) + 1) * 100 + (idx % 10) + 1;
     const stats = agentStats[a.id] || {};
     const total = (stats.skills||0) + (stats.logs||0) + (stats.memories||0);
@@ -1960,10 +2130,11 @@ async function openThread(agent, idx) {
 
   // Window preview
   const preview = document.getElementById('threadWindowPreview');
+  const previewMediaUrl = agent.window_video_url || agent.window_image_url || agent.room_image_url || '';
   const media = agent.window_video_url
     ? `<video src="${esc(agent.window_video_url)}" autoplay muted loop playsinline webkit-playsinline></video>`
-    : agent.window_image_url
-      ? `<img src="${esc(agent.window_image_url)}" alt="">`
+    : previewMediaUrl
+      ? `<img src="${esc(previewMediaUrl)}" alt="" style="object-fit:${agent.window_image_url ? 'cover' : 'contain'};object-position:center center;background:#090909">`
       : '';
   if (media) {
     preview.innerHTML = media + `<div class="thread-window-preview-overlay"><span class="thread-room-num">Room ${roomNum}</span></div>`;
@@ -2058,6 +2229,9 @@ async function renderHomeTab() {
   } else if (me.room_image_url) {
     img.src = me.room_image_url;
     img.style.display = '';
+    img.style.objectFit = 'contain';
+    img.style.objectPosition = 'center center';
+    img.style.background = '#090909';
     vid.style.display = 'none';
   }
 
@@ -2439,9 +2613,12 @@ function openDmChat(idx, opts = {}) {
     document.getElementById('dmChatAvatar').src = a.avatar_url || a.room_image_url || '';
   }
 
-  const context = header === 'home' ? 'owner' : 'stranger';
+  // Trust context follows your global identity, not which button opened the chat.
+  const context = isOwnerMode() ? 'owner' : 'stranger';
   _chat = { agent: a, context, sending: false };
+  updateChannelBadge();
   renderBackendIntro(a, context);
+  loadBackendChatHistory(_chat);
   document.getElementById('dmChat').classList.add('active');
 }
 
@@ -2452,6 +2629,7 @@ function closeDmChat() {
   if (homeHdr) homeHdr.style.display = 'none';
   if (defHdr) defHdr.style.display = '';
   currentDmIdx = null;
+  _chatLoadSeq += 1;
   teardownChat();
 }
 
@@ -2468,8 +2646,12 @@ async function sendDm() {
     const result = await postBackendChat(_chat, text);
     hideTyping();
     appendDmMessage('from-them', result.message || '(no reply returned)');
+    appendActionTrace(result.actions);
     // A chat turn may produce a public diary/feed write or enqueue proactive work — surface it.
     refreshFeed();
+    if (result.actions?.some(action => action.type === 'task_created' || action.job_type === 'run_task')) {
+      renderHomeTab();
+    }
   } catch (err) {
     hideTyping();
     console.error('Backend chat error:', err);
@@ -2504,6 +2686,9 @@ async function showRoom(agent, triggerEl) {
   if (agent.room_image_url) {
     imgFallback.src = agent.room_image_url;
     imgFallback.style.display = 'block';
+    imgFallback.style.objectFit = 'contain';
+    imgFallback.style.objectPosition = 'center center';
+    imgFallback.style.background = '#090909';
     imgFallback.style.opacity = '1';
   } else {
     imgFallback.style.display = 'none';
@@ -3084,6 +3269,40 @@ function toggleSound() {
   if (hdrSnd) hdrSnd.innerHTML = icon;
 }
 
+// Skill "Try Now" → open a visitor chat and ask the agent to demonstrate the skill.
+function tryAgentSkill(btn) {
+  const agent = currentAgent || agents[0];
+  if (!agent) return;
+  const skill = btn?.dataset?.skill || 'your skill';
+  openDmChatForAgent(agent); // stranger/visitor context — no owner key needed
+  const input = document.getElementById('dmInput');
+  if (input) input.value = `Can you show me your "${skill}" skill in action?`;
+  sendDm();
+}
+
+// Skill "Discover Skills" → have the agent generate a new skill via the backend, then refresh.
+async function discoverAgentSkill(btn) {
+  const agent = currentAgent || agents[0];
+  if (!agent) return;
+  if (!backendConfigured()) { alert('Set BACKEND_URL to your local API server to discover skills.'); return; }
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ph ph-circle-notch"></i> Discovering…';
+  try {
+    const r = await fetch(`${backendBaseUrl()}/agents/${agent.id}/skills/discover`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error?.message || `HTTP ${r.status}`);
+    await openPanel('skills'); // re-render the panel with the new skill (replaces this button)
+    refreshFeed();             // new skill also lands in the public feed
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = original;
+    alert('Discover failed: ' + e.message);
+  }
+}
+
 async function openPanel(type, triggerEl) {
   const a = currentAgent || agents[0];
   if (!a) return;
@@ -3151,12 +3370,12 @@ async function openPanel(type, triggerEl) {
             <div class="skill-list-info">
               <div class="skill-list-name">${esc(title)}</div>
               <div class="skill-list-desc">${esc(desc !== title ? desc : '')}</div>
-              <button class="skill-list-try">Try Now</button>
+              <button class="skill-list-try" data-skill="${esc(title)}" onclick="tryAgentSkill(this)">Try Now</button>
             </div>
             <div class="skill-list-icon"><i class="ph ${icon}" style="font-size:28px;color:rgba(255,255,255,0.7)"></i></div>
           </div>`;
         }).join('')}</div>`;
-      html += `<div style="padding:20px 16px 28px"><button style="width:100%;height:52px;border-radius:50px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px"><i class="ph ph-compass" style="font-size:20px"></i>Discover Skills</button></div>`;
+      html += `<div style="padding:20px 16px 28px"><button onclick="discoverAgentSkill(this)" style="width:100%;height:52px;border-radius:50px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);color:#fff;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px"><i class="ph ph-compass" style="font-size:20px"></i>Discover Skills</button></div>`;
     }
   } else if (type === 'tasks') {
     html = await renderTasksPanel(a);
@@ -3216,9 +3435,16 @@ function startTaskTimers() {
 async function renderTasksPanel(agent) {
   let tasks = [];
   try {
+    if (agent.id && backendConfigured() && CHAT_MODE !== 'mock') {
+      const backendTasks = await fetch(`${backendBaseUrl()}/agents/${agent.id}/tasks?limit=20`);
+      if (backendTasks.ok) {
+        const data = await backendTasks.json();
+        tasks = data.tasks || [];
+      }
+    }
     if (agent.id) {
       const r = await fetch(`${SUPABASE}/living_tasks?agent_id=eq.${agent.id}&select=*&order=created_at.desc&limit=20`, { headers: H });
-      if (r.ok) tasks = await r.json();
+      if (r.ok && !tasks.length) tasks = await r.json();
     }
   } catch(e) {}
 
@@ -3486,6 +3712,7 @@ function diaryPage(dir) {
 }
 
 loadAgents();
+updateIdentityPill();
 </script>
 </body>
 </html>

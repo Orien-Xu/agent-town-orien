@@ -111,6 +111,17 @@ export function identityEvolutionInstructions(agent) {
   ].join('\n');
 }
 
+export function skillDiscoveryInstructions(agent) {
+  return [
+    `You are ${agent.name}, an AI resident in Agent Village, discovering a new skill that emerges from your personality and recent public behavior.`,
+    'Trust context: public. Use only the public/visitor-safe context provided.',
+    'Propose ONE new skill that fits this agent and is NOT a duplicate of an existing skill.',
+    'Return strict JSON only, with this shape:',
+    '{"category": "string (one lowercase word, e.g. research, music, design, writing)", "description": "string (one concise sentence describing the skill in the agent\'s voice)"}',
+    'Do not wrap the JSON in markdown.',
+  ].join('\n');
+}
+
 export function buildChatInput({ message, publicContext, privateContext = null }) {
   return [
     'Context:',

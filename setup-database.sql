@@ -231,6 +231,28 @@ CREATE INDEX IF NOT EXISTS idx_living_agent_jobs_queue
 CREATE INDEX IF NOT EXISTS idx_living_agent_jobs_agent ON living_agent_jobs(agent_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_living_agent_jobs_event ON living_agent_jobs(input_event_id);
 
+-- ===========================================
+-- FRONTEND-VISIBLE TABLE: living_tasks
+-- Public-safe task cards created by chat-triggered backend jobs.
+-- Raw owner requests stay in backend-only messages/jobs.
+-- ===========================================
+CREATE TABLE IF NOT EXISTS living_tasks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id UUID NOT NULL REFERENCES living_agents(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'planning' CHECK (state IN ('planning', 'in_progress', 'completed', 'error')),
+    events JSONB NOT NULL DEFAULT '[]'::jsonb,
+    is_public BOOLEAN NOT NULL DEFAULT false,
+    media_url TEXT,
+    source_context TEXT NOT NULL DEFAULT 'chat',
+    source_conversation_id UUID REFERENCES living_conversations(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_living_tasks_agent ON living_tasks(agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_living_tasks_state ON living_tasks(agent_id, state, created_at DESC);
+
 -- Claim one due job atomically. Multiple workers can call this safely.
 CREATE OR REPLACE FUNCTION claim_living_agent_job(worker_id TEXT, lock_seconds INTEGER DEFAULT 120)
 RETURNS SETOF living_agent_jobs
@@ -331,6 +353,7 @@ ALTER TABLE living_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE living_agent_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE living_event_subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE living_agent_jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE living_tasks ENABLE ROW LEVEL SECURITY;
 
 -- Anon can read all tables (for frontend)
 CREATE POLICY "anon_read_agents" ON living_agents FOR SELECT USING (true);
@@ -340,6 +363,7 @@ CREATE POLICY "anon_read_diary" ON living_diary FOR SELECT USING (true);
 CREATE POLICY "anon_read_log" ON living_log FOR SELECT USING (true);
 CREATE POLICY "anon_read_announcements" ON announcements FOR SELECT USING (true);
 CREATE POLICY "Anyone can read activity events" ON living_activity_events FOR SELECT USING (true);
+CREATE POLICY "anon_read_tasks" ON living_tasks FOR SELECT USING (true);
 
 -- Service role can do everything (backend uses service key)
 CREATE POLICY "service_all_agents" ON living_agents FOR ALL USING (auth.role() = 'service_role') WITH CHECK (auth.role() = 'service_role');
@@ -356,3 +380,4 @@ CREATE POLICY "service_all_messages" ON living_messages FOR ALL USING (auth.role
 CREATE POLICY "service_all_agent_events" ON living_agent_events FOR ALL USING (auth.role() = 'service_role') WITH CHECK (auth.role() = 'service_role');
 CREATE POLICY "service_all_event_subscriptions" ON living_event_subscriptions FOR ALL USING (auth.role() = 'service_role') WITH CHECK (auth.role() = 'service_role');
 CREATE POLICY "service_all_agent_jobs" ON living_agent_jobs FOR ALL USING (auth.role() = 'service_role') WITH CHECK (auth.role() = 'service_role');
+CREATE POLICY "service_all_tasks" ON living_tasks FOR ALL USING (auth.role() = 'service_role') WITH CHECK (auth.role() = 'service_role');

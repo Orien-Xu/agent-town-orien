@@ -14,6 +14,13 @@ export function getModel() {
   return optionalEnv('OPENAI_MODEL', DEFAULT_OPENAI_MODEL);
 }
 
+function assertComplete(response) {
+  if (response?.status === 'incomplete') {
+    const reason = response.incomplete_details?.reason || 'unknown';
+    throw new Error(`OpenAI response incomplete (${reason}); try raising max_output_tokens.`);
+  }
+}
+
 export async function generateText({ instructions, input, maxOutputTokens = 700, model = getModel() }) {
   const response = await getClient().responses.create({
     model,
@@ -22,10 +29,7 @@ export async function generateText({ instructions, input, maxOutputTokens = 700,
     max_output_tokens: maxOutputTokens,
     store: false,
   });
-  if (response?.status === 'incomplete') {
-    const reason = response.incomplete_details?.reason || 'unknown';
-    throw new Error(`OpenAI response incomplete (${reason}); try raising max_output_tokens.`);
-  }
+  assertComplete(response);
   const text = extractOutputText(response).trim();
   if (!text) {
     throw new Error(`OpenAI returned no text for model "${model}". Check the model name (OPENAI_MODEL) and that your key can access it.`);
@@ -33,8 +37,36 @@ export async function generateText({ instructions, input, maxOutputTokens = 700,
   return text;
 }
 
-export async function generateJson({ instructions, input, maxOutputTokens = 1600, model = getModel() }) {
-  const text = await generateText({ instructions, input, maxOutputTokens, model });
+export async function generateJson({
+  instructions,
+  input,
+  maxOutputTokens = 1600,
+  model = getModel(),
+  schema = null,
+  schemaName = 'json_response',
+}) {
+  const response = await getClient().responses.create({
+    model,
+    instructions: `${instructions}\nReturn only a valid JSON object.`,
+    input,
+    max_output_tokens: maxOutputTokens,
+    store: false,
+    text: {
+      format: schema
+        ? {
+            type: 'json_schema',
+            name: schemaName,
+            schema,
+            strict: false,
+          }
+        : { type: 'json_object' },
+    },
+  });
+  assertComplete(response);
+  const text = extractOutputText(response).trim();
+  if (!text) {
+    throw new Error(`OpenAI returned no JSON text for model "${model}".`);
+  }
   return parseJsonText(text);
 }
 

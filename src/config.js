@@ -75,3 +75,11 @@ export function getPort() {
 }
 
 export const DEFAULT_OPENAI_MODEL = 'gpt-5.4-mini';
+
+// Demo owner passcode. Authentication is out of scope per the brief, so this is a
+// single shared secret that flips a session into "owner" mode for all agents.
+export const DEFAULT_OWNER_PASSCODE = 'village-owner';
+
+export function getOwnerPasscode() {
+  return optionalEnv('OWNER_PASSCODE', DEFAULT_OWNER_PASSCODE);
+}

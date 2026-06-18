@@ -5,7 +5,16 @@ import { fileURLToPath } from 'node:url';
 import { getPort, loadEnv } from './config.js';
 import { listEvents, listJobs } from './db.js';
 import { getModel } from './openai.js';
-import { chatWithAgent, evolveIdentity, seedDefaultSubscriptions } from './service.js';
+import {
+  assertOwnerToken,
+  chatWithAgent,
+  discoverSkill,
+  evolveIdentity,
+  listAgentTasks,
+  listChatHistory,
+  seedDefaultSubscriptions,
+} from './service.js';
+import { getOwnerPasscode } from './config.js';
 
 loadEnv();
 
@@ -43,6 +52,7 @@ function sendError(response, status, error) {
 function statusForError(error) {
   const code = error?.code || error?.details?.code;
   const detailCode = error?.details?.code;
+  if (code === 'unauthorized') return 401;
   if (code === 'invalid_json' || code === 'body_too_large' || code === 'usage_error') return 400;
   if (detailCode?.startsWith?.('missing_')) return 400;
   if (detailCode === 'invalid_agent_key' || detailCode === 'invalid_agent_id') return 404;
@@ -167,11 +177,20 @@ async function route(request, response) {
     return;
   }
 
+  if (request.method === 'POST' && pathname === '/auth/owner') {
+    const body = await readJson(request);
+    assertOwnerToken(body.passcode); // throws unauthorized -> 401
+    sendJson(response, 200, { ok: true, token: getOwnerPasscode() });
+    return;
+  }
+
   if (request.method === 'POST' && pathname === '/chat/owner') {
     const body = await readJson(request);
     const result = await chatWithAgent({
       context: 'owner',
       agentKey: body.agent_key,
+      agentId: body.agent_id,
+      ownerToken: body.owner_token,
       message: body.message,
       externalUserId: body.owner_id || null,
     });
@@ -181,6 +200,25 @@ async function route(request, response) {
       conversation_id: result.conversation.id,
       context: result.context,
       message: result.message,
+      actions: result.actions,
+    });
+    return;
+  }
+
+  if (request.method === 'POST' && pathname === '/chat/owner/history') {
+    const body = await readJson(request);
+    const result = await listChatHistory({
+      context: 'owner',
+      agentKey: body.agent_key,
+      agentId: body.agent_id,
+      ownerToken: body.owner_token,
+      limit: intParam(body.limit, 80, 200),
+    });
+    sendJson(response, 200, {
+      agent_id: result.agent.id,
+      agent_name: result.agent.name,
+      context: result.context,
+      messages: result.messages,
     });
     return;
   }
@@ -199,6 +237,38 @@ async function route(request, response) {
       conversation_id: result.conversation.id,
       context: result.context,
       message: result.message,
+      actions: result.actions,
+    });
+    return;
+  }
+
+  if (request.method === 'POST' && pathname === '/chat/stranger/history') {
+    const body = await readJson(request);
+    const result = await listChatHistory({
+      context: 'stranger',
+      agentId: body.agent_id,
+      limit: intParam(body.limit, 80, 200),
+    });
+    sendJson(response, 200, {
+      agent_id: result.agent.id,
+      agent_name: result.agent.name,
+      context: result.context,
+      messages: result.messages,
+    });
+    return;
+  }
+
+  if (request.method === 'GET' && parts.length === 3 && parts[0] === 'agents' && parts[2] === 'tasks') {
+    const result = await listAgentTasks({
+      agentId: parts[1],
+      limit: intParam(url.searchParams.get('limit'), 20, 100),
+    });
+    sendJson(response, 200, {
+      agent_id: result.agent.id,
+      agent_name: result.agent.name,
+      tasks: result.tasks,
+      source: result.source,
+      missing_tasks_table: Boolean(result.missing_tasks_table),
     });
     return;
   }
@@ -216,6 +286,24 @@ async function route(request, response) {
         private: result.snapshots.private.id,
         visitor: result.snapshots.visitor.id,
         public: result.snapshots.public.id,
+      },
+    });
+    return;
+  }
+
+  if (request.method === 'POST' && parts.length === 4 && parts[0] === 'agents' && parts[2] === 'skills' && parts[3] === 'discover') {
+    const body = await readJson(request);
+    const result = await discoverSkill({
+      agentId: parts[1],
+      agentKey: body.agent_key || null,
+    });
+    sendJson(response, 200, {
+      agent_id: result.agent.id,
+      agent_name: result.agent.name,
+      skill: {
+        id: result.skill.id,
+        category: result.skill.category,
+        description: result.skill.description,
       },
     });
     return;

@@ -2,10 +2,13 @@ import {
   addMessage,
   addPrivateMemory,
   addPublicMemory,
+  addSkill,
+  appendTaskEvent,
   claimJob,
   completeJob,
   createConversation,
   createSubscription,
+  createTask,
   enqueueJob,
   failJob,
   getAgentById,
@@ -18,10 +21,13 @@ import {
   insertIdentitySnapshot,
   latestAgentRowAt,
   latestAgentActivityAt,
+  listJobs,
   listAgents,
   listRecentJobs,
   listSubscriptions,
+  listTasks,
   publishEvent,
+  selectRows,
   updateAgentPublicIdentity,
   writeActivityEvent,
   writeDiary,
@@ -38,8 +44,10 @@ import {
   proactiveDiaryInstructions,
   publicReactionInstructions,
   publicSummaryInstructions,
+  skillDiscoveryInstructions,
   strangerChatInstructions,
 } from './prompts.js';
+import { getOwnerPasscode } from './config.js';
 
 function usageError(message) {
   const error = new Error(message);
@@ -48,11 +56,62 @@ function usageError(message) {
   return error;
 }
 
+function unauthorizedError(message) {
+  const error = new Error(message);
+  error.code = 'unauthorized';
+  error.exitCode = 1;
+  return error;
+}
+
+// Stateless owner-session check: a valid passcode is the bearer credential for owner mode.
+export function assertOwnerToken(token) {
+  if (!token || token !== getOwnerPasscode()) {
+    throw unauthorizedError('Invalid or missing owner passcode.');
+  }
+}
+
 const PUBLIC_REACTION_EVENT_TYPES = new Set([
   'diary_posted',
   'public_feed_posted',
   'public_memory_added',
 ]);
+
+const TASK_INTENT_PATTERN = /\b(create|start|queue|run|track|plan|make|build|work on|set up)\b[\s\S]{0,80}\b(task|todo|job|project|work item)\b|\b(task|todo|job)\b[\s\S]{0,80}\b(create|start|queue|run|track|plan|make|build|work on|set up)\b/i;
+const PRIVATE_DETAIL_PATTERN = /\b(secret|private|password|token|api key|key|birthday|wife|husband|partner|child|family|address|phone|email|medical|health|bank|ssn)\b/i;
+const IDENTITY_SCHEMA = {
+  type: 'object',
+  properties: {
+    private: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string' },
+        traits: { type: 'array', items: { type: 'string' } },
+        status: { type: 'string' },
+        bio: { type: 'string' },
+      },
+    },
+    visitor: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string' },
+        traits: { type: 'array', items: { type: 'string' } },
+        status: { type: 'string' },
+        bio: { type: 'string' },
+      },
+    },
+    public: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string' },
+        traits: { type: 'array', items: { type: 'string' } },
+        status: { type: 'string' },
+        bio: { type: 'string' },
+        visitor_bio: { type: 'string' },
+      },
+    },
+  },
+  required: ['private', 'visitor', 'public'],
+};
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -69,6 +128,71 @@ function eventAgentIds(event) {
 function truncate(text, length = 240) {
   if (!text) return '';
   return text.length > length ? `${text.slice(0, length - 1)}...` : text;
+}
+
+function isMissingTasksTable(error) {
+  return error?.code === 'db_error'
+    && /living_tasks|schema cache|Could not find the table|relation .*living_tasks/i.test(error.message || '');
+}
+
+function taskRequested(message) {
+  return TASK_INTENT_PATTERN.test(message || '');
+}
+
+function taskTitleFromMessage(message, context) {
+  if (context === 'owner' && PRIVATE_DETAIL_PATTERN.test(message || '')) {
+    return 'Owner-requested private task';
+  }
+  const cleaned = String(message || '')
+    .replace(/\s+/g, ' ')
+    .replace(/^(please\s+)?(can|could|would)\s+you\s+/i, '')
+    .replace(/\b(create|start|queue|run|track|plan|make|build|work on|set up)\s+(a\s+|an\s+|the\s+)?(task|todo|job|project|work item)\s*(to|for|about|called)?\s*/i, '')
+    .trim();
+  const fallback = context === 'owner' ? 'Owner-requested task' : 'Visitor-requested task';
+  return truncate(cleaned || fallback, 120);
+}
+
+function taskEvent(state, text) {
+  return {
+    state,
+    text,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function actionForJob(job, label = 'Worker job queued') {
+  return {
+    type: 'job_queued',
+    label,
+    job_id: job.id,
+    job_type: job.job_type,
+    status: job.status,
+  };
+}
+
+function taskFromJob(job) {
+  const done = job.status === 'succeeded';
+  const failed = job.status === 'failed';
+  const running = job.status === 'running';
+  const state = done ? 'completed' : failed ? 'error' : running ? 'in_progress' : 'planning';
+  const title = job.input?.public_title || 'Queued task';
+  const events = [
+    taskEvent('planning', `Queued: ${title}`),
+  ];
+  if (running) events.push(taskEvent('in_progress', 'Worker is processing this task.'));
+  if (done) events.push(taskEvent('completed', job.output?.text || 'Task completed.'));
+  if (failed) events.push(taskEvent('error', job.error || 'Task failed.'));
+  return {
+    id: job.input?.task_id || job.id,
+    agent_id: job.agent_id,
+    title,
+    state,
+    events,
+    is_public: false,
+    created_at: job.created_at,
+    updated_at: job.updated_at,
+    completed_at: job.completed_at,
+  };
 }
 
 function jobVisibilityFor(actionType, eventVisibility) {
@@ -244,8 +368,17 @@ export async function seedDefaultSubscriptions() {
   return { agents, created };
 }
 
-export async function resolveAgentForContext({ context, agentKey, agentId }) {
-  if (context === 'owner') return getAgentByKey(agentKey);
+export async function resolveAgentForContext({ context, agentKey, agentId, ownerToken }) {
+  if (context === 'owner') {
+    // Global owner session: a valid passcode authorizes owner access to any agent by id.
+    if (ownerToken) {
+      assertOwnerToken(ownerToken);
+      return getAgentById(agentId);
+    }
+    // CLI back-compat: per-agent api key.
+    if (agentKey) return getAgentByKey(agentKey);
+    throw unauthorizedError('Owner access requires a passcode (owner_token) or agent key.');
+  }
   if (agentId) return getAgentById(agentId);
   if (agentKey) return getAgentByKey(agentKey);
   return getAgentById(agentId);
@@ -333,13 +466,149 @@ export async function postFeedCommand({ agentKey, text, type = 'learning_log', p
   return { agent, row, type, event: eventResult.event, jobs: eventResult.jobs };
 }
 
-export async function chatWithAgent({ context, agentKey, agentId, message, externalUserId = null }) {
+export async function discoverSkill({ agentKey = null, agentId = null }) {
+  const agent = agentKey ? await getAgentByKey(agentKey) : await getAgentById(agentId);
+  const context = await getPublicContext(agent.id);
+  const output = await generateJson({
+    instructions: skillDiscoveryInstructions(agent),
+    input: [
+      'Your public context (existing skills must not be duplicated):',
+      formatPublicContext(agent, context),
+      '',
+      'Respond with a single JSON object containing "category" and "description".',
+    ].join('\n'),
+    maxOutputTokens: 300,
+  });
+
+  const description = (output?.description || '').trim();
+  if (!description) throw usageError('Skill discovery did not return a description.');
+  const category = (output?.category || 'general').toString().trim().toLowerCase() || 'general';
+
+  const skill = await addSkill(agent.id, { category, description });
+  // The activity_feed view reads living_skills directly, so the new skill shows up
+  // in the public feed automatically; the event below is for observability + fan-out.
+  const eventResult = await publishAgentEvent({
+    eventType: 'skill_discovered',
+    visibility: 'public',
+    sourceAgentId: agent.id,
+    summary: truncate(`${category}: ${description}`),
+    payload: { skill_id: skill.id, category },
+  });
+
+  return { agent, skill, event: eventResult.event, jobs: eventResult.jobs };
+}
+
+async function queueTaskFromChat({ agent, context, message, conversation, causedByEventId }) {
+  const title = taskTitleFromMessage(message, context);
+  const initialEvent = taskEvent('planning', `${title} queued from ${context} chat.`);
+  const actions = [];
+  let task = null;
+  let taskTableMissing = false;
+
+  try {
+    task = await createTask({
+      agentId: agent.id,
+      title,
+      context: `${context}_chat`,
+      conversationId: conversation.id,
+      events: [initialEvent],
+    });
+    actions.push({
+      type: 'task_created',
+      label: 'Task created',
+      task_id: task.id,
+      title,
+      state: task.state,
+    });
+  } catch (error) {
+    if (!isMissingTasksTable(error)) throw error;
+    taskTableMissing = true;
+    actions.push({
+      type: 'task_pending_schema',
+      label: 'Task table missing',
+      title,
+      detail: 'Queued a worker job; run the updated migration for task cards.',
+    });
+  }
+
+  const job = await enqueueJob({
+    agentId: agent.id,
+    jobType: 'run_task',
+    visibility: context === 'owner' ? 'private' : 'visitor',
+    priority: 65,
+    inputEventId: causedByEventId,
+    input: {
+      task_id: task?.id || null,
+      public_title: title,
+      original_message: message,
+      conversation_id: conversation.id,
+      context,
+      task_table_missing: taskTableMissing,
+    },
+  });
+  actions.push(actionForJob(job, 'Task worker queued'));
+
+  const eventResult = await publishAgentEvent({
+    eventType: 'task_queued',
+    visibility: context === 'owner' ? 'private' : 'visitor',
+    sourceAgentId: agent.id,
+    conversationId: conversation.id,
+    causedByEventId,
+    summary: `${title} queued.`,
+    payload: {
+      task_id: task?.id || null,
+      job_id: job.id,
+      task_table_missing: taskTableMissing,
+    },
+  }, { fanout: false });
+
+  return { task, job, actions };
+}
+
+export async function listChatHistory({ context, agentKey, agentId, ownerToken, limit = 80 }) {
+  if (!['owner', 'stranger'].includes(context)) {
+    throw usageError(`Unsupported chat context: ${context}`);
+  }
+  const agent = await resolveAgentForContext({ context, agentKey, agentId, ownerToken });
+  const safeLimit = Math.min(Math.max(Number(limit) || 80, 1), 200);
+  const rows = await selectRows('living_messages', {
+    select: 'id,conversation_id,context,role,text,metadata,created_at',
+    agent_id: `eq.${agent.id}`,
+    context: `eq.${context}`,
+    order: 'created_at.desc',
+    limit: safeLimit,
+  });
+  return {
+    agent,
+    context,
+    messages: (rows || []).reverse(),
+  };
+}
+
+export async function listAgentTasks({ agentId, limit = 20 }) {
+  const agent = await getAgentById(agentId);
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
+  try {
+    const tasks = await listTasks({ agentId: agent.id, limit: safeLimit });
+    return { agent, tasks, source: 'living_tasks' };
+  } catch (error) {
+    if (!isMissingTasksTable(error)) throw error;
+    const jobs = await listJobs({ agentId: agent.id, limit: safeLimit * 3 });
+    const tasks = jobs
+      .filter(job => job.job_type === 'run_task')
+      .slice(0, safeLimit)
+      .map(taskFromJob);
+    return { agent, tasks, source: 'living_agent_jobs', missing_tasks_table: true };
+  }
+}
+
+export async function chatWithAgent({ context, agentKey, agentId, ownerToken, message, externalUserId = null }) {
   if (!['owner', 'stranger'].includes(context)) {
     throw usageError(`Unsupported chat context: ${context}`);
   }
   if (!message) throw usageError('Missing message.');
 
-  const agent = await resolveAgentForContext({ context, agentKey, agentId });
+  const agent = await resolveAgentForContext({ context, agentKey, agentId, ownerToken });
   const publicContext = formatPublicContext(agent, await getPublicContext(agent.id));
   const ownerContext = context === 'owner'
     ? formatPrivateContext(await getOwnerPrivateContext(agent.id))
@@ -360,6 +629,7 @@ export async function chatWithAgent({ context, agentKey, agentId, message, exter
     text: message,
   });
 
+  const actions = [];
   const userEventResult = await publishAgentEvent({
     eventType: context === 'owner' ? 'owner_message_received' : 'stranger_message_received',
     visibility: context === 'owner' ? 'private' : 'visitor',
@@ -371,10 +641,11 @@ export async function chatWithAgent({ context, agentKey, agentId, message, exter
       external_user_id: externalUserId,
     },
   });
+  actions.push(...userEventResult.jobs.map(job => actionForJob(job, 'Subscription job queued')));
 
   if (context === 'owner') {
     await addPrivateMemory(agent.id, `Owner said: ${message}`, 'owner_chat');
-    await publishAgentEvent({
+    const memoryEventResult = await publishAgentEvent({
       eventType: 'private_memory_added',
       visibility: 'private',
       sourceAgentId: agent.id,
@@ -386,6 +657,23 @@ export async function chatWithAgent({ context, agentKey, agentId, message, exter
         message_id: userMessage.id,
       },
     });
+    actions.push({
+      type: 'private_memory_recorded',
+      label: 'Private memory stored',
+      event_id: memoryEventResult.event.id,
+    });
+    actions.push(...memoryEventResult.jobs.map(job => actionForJob(job, 'Subscription job queued')));
+  }
+
+  if (taskRequested(message)) {
+    const taskResult = await queueTaskFromChat({
+      agent,
+      context,
+      message,
+      conversation,
+      causedByEventId: userEventResult.event.id,
+    });
+    actions.push(...taskResult.actions);
   }
 
   const instructions = context === 'owner'
@@ -405,7 +693,7 @@ export async function chatWithAgent({ context, agentKey, agentId, message, exter
     metadata: { model: getModel() },
   });
 
-  await publishAgentEvent({
+  const replyEventResult = await publishAgentEvent({
     eventType: context === 'owner' ? 'owner_reply_sent' : 'stranger_reply_sent',
     visibility: context === 'owner' ? 'private' : 'visitor',
     sourceAgentId: agent.id,
@@ -417,8 +705,9 @@ export async function chatWithAgent({ context, agentKey, agentId, message, exter
       model: getModel(),
     },
   });
+  actions.push(...replyEventResult.jobs.map(job => actionForJob(job, 'Subscription job queued')));
 
-  return { agent, conversation, message: reply, context };
+  return { agent, conversation, message: reply, context, actions };
 }
 
 function snapshotFromOutput(output, key, fallback = {}) {
@@ -443,6 +732,8 @@ export async function evolveIdentity({ agentKey, agentId, causedByEventId = null
   const output = await generateJson({
     instructions: identityEvolutionInstructions(agent),
     input: buildEvolutionInput({ publicContext, privateContext, messages: context.messages }),
+    schema: IDENTITY_SCHEMA,
+    schemaName: 'identity_evolution',
   });
 
   const privateSnapshot = await insertIdentitySnapshot(
@@ -635,11 +926,82 @@ async function processPublicReactionJob(job) {
   };
 }
 
+async function processRunTaskJob(job) {
+  const agent = await getAgentById(job.agent_id);
+  const taskId = job.input?.task_id || null;
+  const title = job.input?.public_title || 'Queued task';
+  let task = null;
+
+  if (taskId) {
+    try {
+      task = await appendTaskEvent(taskId, taskEvent('in_progress', `${title} started.`), {
+        state: 'in_progress',
+      });
+    } catch (error) {
+      if (!isMissingTasksTable(error)) throw error;
+    }
+  }
+
+  const publicContext = formatPublicContext(agent, await getPublicContext(agent.id));
+  const input = [
+    'Task request from chat. The original request may contain private details.',
+    `Public-safe task title: ${title}`,
+    '',
+    'Original request:',
+    job.input?.original_message || title,
+    '',
+    'Public context:',
+    publicContext,
+    '',
+    'Write one concise public-safe completion note. Do not reveal owner-private facts, exact private dates, contact details, secrets, or hidden conversation history. Do not claim you used external tools or files. Focus on what the agent did inside the village prototype.',
+  ].join('\n');
+
+  const text = await generateText({
+    instructions: publicSummaryInstructions(agent),
+    input,
+    maxOutputTokens: 220,
+  });
+
+  if (taskId) {
+    try {
+      task = await appendTaskEvent(taskId, taskEvent('completed', text), {
+        state: 'completed',
+        completed_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      if (!isMissingTasksTable(error)) throw error;
+    }
+  }
+
+  const row = await writeActivityEvent(agent.id, text, 'task_completed');
+  const eventResult = await publishAgentEvent({
+    eventType: 'task_completed',
+    visibility: 'public',
+    sourceAgentId: agent.id,
+    causedByEventId: job.input_event_id || job.input?.event_id || null,
+    summary: truncate(text),
+    payload: {
+      task_id: taskId,
+      activity_event_id: row.id,
+      job_id: job.id,
+    },
+  });
+
+  return {
+    task_id: task?.id || taskId,
+    activity_event_id: row.id,
+    event_id: eventResult.event.id,
+    fanout_jobs: eventResult.jobs.map(fanoutJob => fanoutJob.id),
+    text,
+  };
+}
+
 export async function processJob(job, logger = console) {
   logger.log?.(`processing job ${job.id} (${job.job_type})`);
   if (job.job_type === 'evolve_identity') return processEvolveIdentityJob(job);
   if (job.job_type === 'write_diary') return processWriteDiaryJob(job);
   if (job.job_type === 'react_to_public_event') return processPublicReactionJob(job);
+  if (job.job_type === 'run_task') return processRunTaskJob(job);
   throw usageError(`Unsupported job type: ${job.job_type}`);
 }
 
