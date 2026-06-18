@@ -1,10 +1,15 @@
 import http from 'node:http';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getPort, loadEnv } from './config.js';
 import { listEvents, listJobs } from './db.js';
 import { getModel } from './openai.js';
 import { chatWithAgent, evolveIdentity, seedDefaultSubscriptions } from './service.js';
 
 loadEnv();
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function sendJson(response, status, body) {
   response.writeHead(status, {
@@ -14,6 +19,16 @@ function sendJson(response, status, body) {
     'Access-Control-Allow-Headers': 'Content-Type',
   });
   response.end(JSON.stringify(body, null, 2));
+}
+
+async function sendFile(response, filePath, contentType, sendBody = true) {
+  const data = await fs.readFile(filePath);
+  response.writeHead(200, {
+    'Content-Type': contentType,
+    'Cache-Control': 'no-store',
+    'Content-Length': data.length,
+  });
+  response.end(sendBody ? data : undefined);
 }
 
 function sendError(response, status, error) {
@@ -31,6 +46,11 @@ function statusForError(error) {
   if (code === 'invalid_json' || code === 'body_too_large' || code === 'usage_error') return 400;
   if (detailCode?.startsWith?.('missing_')) return 400;
   if (detailCode === 'invalid_agent_key' || detailCode === 'invalid_agent_id') return 404;
+  // Supabase/Postgres client errors carry their HTTP status — don't mask 4xx as 500.
+  if (error?.code === 'db_error' && Number.isInteger(error?.details?.status)
+      && error.details.status >= 400 && error.details.status < 500) {
+    return error.details.status;
+  }
   return 500;
 }
 
@@ -74,11 +94,38 @@ function intParam(value, fallback, max = 500) {
 
 async function route(request, response) {
   if (request.method === 'OPTIONS') {
-    sendJson(response, 204, {});
+    response.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    });
+    response.end();
     return;
   }
 
   const { url, pathname, parts } = pathParts(request);
+
+  const isStaticMethod = request.method === 'GET' || request.method === 'HEAD';
+
+  if (isStaticMethod && (pathname === '/' || pathname === '/index.html')) {
+    await sendFile(response, path.join(repoRoot, 'index.html'), 'text/html; charset=utf-8', request.method !== 'HEAD');
+    return;
+  }
+
+  if (isStaticMethod && pathname.startsWith('/fonts/')) {
+    const fileName = path.basename(pathname);
+    if (!['Telka-Regular.woff2', 'Telka-Extended-Super.woff2'].includes(fileName)) {
+      sendJson(response, 404, {
+        error: {
+          code: 'not_found',
+          message: 'Route not found.',
+        },
+      });
+      return;
+    }
+    await sendFile(response, path.join(repoRoot, 'fonts', fileName), 'font/woff2', request.method !== 'HEAD');
+    return;
+  }
 
   if (request.method === 'GET' && pathname === '/health') {
     sendJson(response, 200, {

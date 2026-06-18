@@ -22,7 +22,15 @@ export async function generateText({ instructions, input, maxOutputTokens = 700,
     max_output_tokens: maxOutputTokens,
     store: false,
   });
-  return extractOutputText(response).trim();
+  if (response?.status === 'incomplete') {
+    const reason = response.incomplete_details?.reason || 'unknown';
+    throw new Error(`OpenAI response incomplete (${reason}); try raising max_output_tokens.`);
+  }
+  const text = extractOutputText(response).trim();
+  if (!text) {
+    throw new Error(`OpenAI returned no text for model "${model}". Check the model name (OPENAI_MODEL) and that your key can access it.`);
+  }
+  return text;
 }
 
 export async function generateJson({ instructions, input, maxOutputTokens = 1600, model = getModel() }) {
