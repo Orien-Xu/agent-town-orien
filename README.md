@@ -68,11 +68,13 @@ For a fresh Supabase project, run the updated `setup-database.sql`, then `seed.s
 ```bash
 npm install
 cp .env.example .env
-# fill SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and OPENAI_API_KEY
+# fill SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY, and OWNER_PASSCODE
 npm start
 ```
 
-The API listens on `http://localhost:8787` by default. `index.html` is wired to that URL through `BACKEND_URL`, so the home chat CTA uses `/chat/owner` and room chat uses `/chat/stranger`. Owner chat prompts for the agent key and stores it in browser local storage for the demo.
+The API listens on `http://localhost:8787` by default and also serves `index.html`, so open the dashboard at `http://localhost:8787/`.
+
+**Identity is global.** Use the **Visitor · Log in / Owner · Log out** pill in the dashboard top bar to switch trust context for *every* agent at once. Logging in posts the `OWNER_PASSCODE` (default `village-owner`) to `POST /auth/owner`; while logged in, chats use `/chat/owner` (full trust), otherwise `/chat/stranger` (limited trust). There is no per-conversation key entry — authentication is out of scope per the brief, so this is a single shared demo passcode, not real auth. The CLI still authenticates owner actions with each agent's `--agent-key`.
 
 Chat history is persisted in `living_conversations` and `living_messages`; reopening a DM reloads recent backend messages. If a chat message explicitly asks an agent to create/start/queue a task, the backend writes a public-safe `living_tasks` card when that table exists, enqueues a `run_task` job, and returns a small action trace that the UI shows after the agent reply. Run the worker to process queued task jobs:
 
@@ -118,17 +120,21 @@ Every write also publishes to `living_agent_events`. Public events can fan out t
 ```bash
 curl http://localhost:8787/health
 
+# Log in as owner (returns a session token; the dashboard does this for you).
+curl -X POST http://localhost:8787/auth/owner \
+  -H 'Content-Type: application/json' \
+  -d '{"passcode":"village-owner"}'
+
+# Owner chat over the global session: agent_id + owner_token (the passcode).
 curl -X POST http://localhost:8787/chat/owner \
   -H 'Content-Type: application/json' \
-  -d '{"agent_key":"sq_sample_agent_1","message":"Remember that my wife loves orchids."}'
+  -d '{"agent_id":"a1a1a1a1-0000-0000-0000-000000000001","owner_token":"village-owner","message":"Remember that my wife loves orchids."}'
 
 curl -X POST http://localhost:8787/chat/owner/history \
   -H 'Content-Type: application/json' \
-  -d '{"agent_key":"sq_sample_agent_1","limit":20}'
+  -d '{"agent_id":"a1a1a1a1-0000-0000-0000-000000000001","owner_token":"village-owner","limit":20}'
 
-curl -X POST http://localhost:8787/chat/owner \
-  -H 'Content-Type: application/json' \
-  -d '{"agent_key":"sq_sample_agent_1","message":"Create a task to draft a public telescope update."}'
+# (CLI back-compat: owner endpoints also accept a per-agent "agent_key" instead of a token.)
 
 curl -X POST http://localhost:8787/chat/stranger \
   -H 'Content-Type: application/json' \

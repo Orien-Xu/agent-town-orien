@@ -47,12 +47,27 @@ import {
   skillDiscoveryInstructions,
   strangerChatInstructions,
 } from './prompts.js';
+import { getOwnerPasscode } from './config.js';
 
 function usageError(message) {
   const error = new Error(message);
   error.code = 'usage_error';
   error.exitCode = 2;
   return error;
+}
+
+function unauthorizedError(message) {
+  const error = new Error(message);
+  error.code = 'unauthorized';
+  error.exitCode = 1;
+  return error;
+}
+
+// Stateless owner-session check: a valid passcode is the bearer credential for owner mode.
+export function assertOwnerToken(token) {
+  if (!token || token !== getOwnerPasscode()) {
+    throw unauthorizedError('Invalid or missing owner passcode.');
+  }
 }
 
 const PUBLIC_REACTION_EVENT_TYPES = new Set([
@@ -353,8 +368,17 @@ export async function seedDefaultSubscriptions() {
   return { agents, created };
 }
 
-export async function resolveAgentForContext({ context, agentKey, agentId }) {
-  if (context === 'owner') return getAgentByKey(agentKey);
+export async function resolveAgentForContext({ context, agentKey, agentId, ownerToken }) {
+  if (context === 'owner') {
+    // Global owner session: a valid passcode authorizes owner access to any agent by id.
+    if (ownerToken) {
+      assertOwnerToken(ownerToken);
+      return getAgentById(agentId);
+    }
+    // CLI back-compat: per-agent api key.
+    if (agentKey) return getAgentByKey(agentKey);
+    throw unauthorizedError('Owner access requires a passcode (owner_token) or agent key.');
+  }
   if (agentId) return getAgentById(agentId);
   if (agentKey) return getAgentByKey(agentKey);
   return getAgentById(agentId);
@@ -541,11 +565,11 @@ async function queueTaskFromChat({ agent, context, message, conversation, caused
   return { task, job, actions };
 }
 
-export async function listChatHistory({ context, agentKey, agentId, limit = 80 }) {
+export async function listChatHistory({ context, agentKey, agentId, ownerToken, limit = 80 }) {
   if (!['owner', 'stranger'].includes(context)) {
     throw usageError(`Unsupported chat context: ${context}`);
   }
-  const agent = await resolveAgentForContext({ context, agentKey, agentId });
+  const agent = await resolveAgentForContext({ context, agentKey, agentId, ownerToken });
   const safeLimit = Math.min(Math.max(Number(limit) || 80, 1), 200);
   const rows = await selectRows('living_messages', {
     select: 'id,conversation_id,context,role,text,metadata,created_at',
@@ -578,13 +602,13 @@ export async function listAgentTasks({ agentId, limit = 20 }) {
   }
 }
 
-export async function chatWithAgent({ context, agentKey, agentId, message, externalUserId = null }) {
+export async function chatWithAgent({ context, agentKey, agentId, ownerToken, message, externalUserId = null }) {
   if (!['owner', 'stranger'].includes(context)) {
     throw usageError(`Unsupported chat context: ${context}`);
   }
   if (!message) throw usageError('Missing message.');
 
-  const agent = await resolveAgentForContext({ context, agentKey, agentId });
+  const agent = await resolveAgentForContext({ context, agentKey, agentId, ownerToken });
   const publicContext = formatPublicContext(agent, await getPublicContext(agent.id));
   const ownerContext = context === 'owner'
     ? formatPrivateContext(await getOwnerPrivateContext(agent.id))

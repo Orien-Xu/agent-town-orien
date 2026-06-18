@@ -577,10 +577,20 @@ body{
 .dm-chat-info{flex:1}
 .dm-chat-name{font-size:15px;font-weight:500}
 .dm-chat-status{font-size:11px;color:#4ade80}
-.dm-context-switch{display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02)}
-.dm-ctx-btn{flex:1;height:30px;border-radius:16px;border:1px solid rgba(255,255,255,0.12);background:transparent;color:rgba(255,255,255,0.6);font-size:12px;font-weight:700;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px}
-.dm-ctx-btn.active{background:#c4b5fd;border-color:#c4b5fd;color:#1a0050}
-.dm-ctx-key{height:30px;padding:0 12px;border-radius:16px;border:1px solid rgba(255,255,255,0.12);background:transparent;color:rgba(255,255,255,0.55);font-size:11px;font-weight:600;font-family:inherit;cursor:pointer}
+.dm-channel-bar{display:flex;align-items:center;gap:6px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02);font-size:11px;font-weight:600;color:rgba(255,255,255,0.5)}
+/* top-bar global identity pill */
+.identity-pill{display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 13px;border-radius:16px;border:1px solid rgba(255,255,255,0.18);background:rgba(0,0,0,0.25);color:rgba(255,255,255,0.85);font-size:12px;font-weight:700;font-family:inherit;cursor:pointer;white-space:nowrap}
+.identity-pill.owner{background:#c4b5fd;border-color:#c4b5fd;color:#1a0050}
+.owner-login-overlay{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);backdrop-filter:blur(4px)}
+.owner-login-overlay.active{display:flex}
+.owner-login-card{width:300px;max-width:88vw;background:#15131f;border:1px solid rgba(255,255,255,0.12);border-radius:18px;padding:22px 20px;display:flex;flex-direction:column;gap:12px}
+.owner-login-card h3{margin:0;font-size:16px;color:#fff}
+.owner-login-card p{margin:0;font-size:12px;line-height:1.5;color:rgba(255,255,255,0.5)}
+.owner-login-card input{height:42px;border-radius:12px;border:1px solid rgba(255,255,255,0.16);background:rgba(255,255,255,0.05);color:#fff;font-size:14px;font-family:inherit;padding:0 14px}
+.owner-login-err{font-size:12px;color:#fca5a5;min-height:14px}
+.owner-login-actions{display:flex;gap:8px;justify-content:flex-end}
+.owner-login-actions button{height:38px;padding:0 16px;border-radius:10px;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;border:1px solid rgba(255,255,255,0.16);background:transparent;color:#fff}
+.owner-login-actions button.primary{background:#c4b5fd;border-color:#c4b5fd;color:#1a0050}
 .dm-messages{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px}
 .msg{margin-bottom:12px;display:flex;flex-direction:column}
 .msg.from-them{align-items:flex-start}
@@ -1135,6 +1145,7 @@ body.explore-active #room .room-content-layer{display:none !important;}
         <div class="home-tab-btns">
           <button class="home-tab-btn" onclick="openPanel('tasks', this)"><i class="ph ph-check-circle"></i>Tasks <span class="home-tab-badge" id="homeTasksCount">0</span></button>
           <button class="home-tab-btn" onclick="openPanel('skills', this)"><i class="ph ph-diamond"></i>Skills <span class="home-tab-badge" id="homeSkillsCount" style="display:none">0</span></button>
+          <button class="identity-pill" id="identityPill" onclick="onIdentityPillClick()" title="Switch between owner and visitor"><i class="ph ph-mask-happy"></i>Visitor · Log in</button>
         </div>
       </div>
       <!-- diary float button -->
@@ -1359,15 +1370,25 @@ body.explore-active #room .room-content-layer{display:none !important;}
         <div class="dm-chat-status">online</div>
       </div>
     </div>
-    <div class="dm-context-switch" id="dmContextSwitch">
-      <button class="dm-ctx-btn" id="ctxOwnerBtn" onclick="setChatContext('owner')"><i class="ph ph-user-circle"></i>Owner</button>
-      <button class="dm-ctx-btn" id="ctxVisitorBtn" onclick="setChatContext('stranger')"><i class="ph ph-mask-happy"></i>Visitor</button>
-      <button class="dm-ctx-key" id="ctxKeyBtn" onclick="changeOwnerKey()" title="Change owner key">change key</button>
-    </div>
+    <div class="dm-channel-bar"><i class="ph ph-shield-check"></i><span id="dmChannelBadge">Visitor channel</span></div>
     <div class="dm-messages" id="dmMessages"></div>
     <div class="dm-input-bar">
       <input class="dm-input" id="dmInput" placeholder="Message…" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
       <button class="dm-send" onclick="sendDm()">↑</button>
+    </div>
+  </div>
+
+  <!-- ===== OWNER LOGIN MODAL (global identity) ===== -->
+  <div class="owner-login-overlay" id="ownerLoginModal">
+    <div class="owner-login-card">
+      <h3>Log in as owner</h3>
+      <p>Owners get full trust: private memories, recall, and personal context. Without logging in you talk to agents as a visitor.</p>
+      <input id="ownerLoginInput" type="password" placeholder="Owner passcode" autocomplete="off" onkeydown="if(event.key==='Enter')submitOwnerLogin()">
+      <div class="owner-login-err" id="ownerLoginError"></div>
+      <div class="owner-login-actions">
+        <button onclick="closeOwnerLogin()">Cancel</button>
+        <button class="primary" onclick="submitOwnerLogin()">Log in</button>
+      </div>
     </div>
   </div>
 
@@ -1465,47 +1486,86 @@ const getGuestId = () => {
   return id;
 };
 
-function getOwnerAgentKey(agent) {
-  const storageKey = `agent_village_owner_key_${agent.id}`;
-  let key = localStorage.getItem(storageKey);
-  if (!key) {
-    key = window.prompt(`Owner key for ${agent.name}`);
-    if (key) localStorage.setItem(storageKey, key.trim());
+// ===== GLOBAL OWNER SESSION =====
+// Identity is global: one passcode logs you in as owner of every agent. How you
+// interact with any agent is derived from this, not from a per-conversation key.
+const OWNER_TOKEN_KEY = 'agent_village_owner_token';
+const getOwnerToken = () => localStorage.getItem(OWNER_TOKEN_KEY) || '';
+const isOwnerMode  = () => !!getOwnerToken();
+const setOwnerToken = (t) => localStorage.setItem(OWNER_TOKEN_KEY, t);
+const clearOwnerToken = () => localStorage.removeItem(OWNER_TOKEN_KEY);
+
+// Reflect the current identity in the top-bar pill.
+function updateIdentityPill() {
+  const pill = document.getElementById('identityPill');
+  if (!pill) return;
+  const owner = isOwnerMode();
+  pill.classList.toggle('owner', owner);
+  pill.innerHTML = owner
+    ? '<i class="ph ph-user-circle-check"></i>Owner · Log out'
+    : '<i class="ph ph-mask-happy"></i>Visitor · Log in';
+}
+
+function onIdentityPillClick() {
+  if (isOwnerMode()) ownerLogout();
+  else openOwnerLogin();
+}
+
+function openOwnerLogin() {
+  const m = document.getElementById('ownerLoginModal');
+  if (!m) return;
+  document.getElementById('ownerLoginError').textContent = '';
+  const input = document.getElementById('ownerLoginInput');
+  input.value = '';
+  m.classList.add('active');
+  setTimeout(() => input.focus(), 50);
+}
+
+function closeOwnerLogin() {
+  document.getElementById('ownerLoginModal')?.classList.remove('active');
+}
+
+async function submitOwnerLogin() {
+  const input = document.getElementById('ownerLoginInput');
+  const errEl = document.getElementById('ownerLoginError');
+  const passcode = (input.value || '').trim();
+  if (!passcode) { errEl.textContent = 'Enter the owner passcode.'; return; }
+  if (!backendConfigured()) { errEl.textContent = 'Backend not configured.'; return; }
+  try {
+    const r = await fetch(`${backendBaseUrl()}/auth/owner`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passcode }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.ok) throw new Error(data.error?.message || 'Wrong passcode.');
+    setOwnerToken(data.token);
+    closeOwnerLogin();
+    applyIdentityChange();
+  } catch (e) {
+    errEl.textContent = e.message;
   }
-  return key?.trim() || '';
 }
 
-// Reflect the active trust context in the Owner|Visitor toggle.
-function updateContextSwitchUI() {
-  const owner = _chat.context === 'owner';
-  document.getElementById('ctxOwnerBtn')?.classList.toggle('active', owner);
-  document.getElementById('ctxVisitorBtn')?.classList.toggle('active', !owner);
-  const keyBtn = document.getElementById('ctxKeyBtn');
-  if (keyBtn) keyBtn.style.display = owner ? '' : 'none';
+function ownerLogout() {
+  clearOwnerToken();
+  applyIdentityChange();
 }
 
-// Switch the current chat between owner (full trust) and visitor (limited trust) on demand.
-function setChatContext(context) {
-  if (!_chat.agent || _chat.sending || _chat.context === context) return;
-  if (context === 'owner' && !getOwnerAgentKey(_chat.agent)) {
-    appendDmMessage('system', 'Owner key needed for the owner channel — staying on Visitor.');
-    return;
-  }
-  _chat.context = context;
-  updateContextSwitchUI();
-  renderBackendIntro(_chat.agent, context);
-  loadBackendChatHistory(_chat);
-}
-
-// Clear and re-enter the owner key (a wrong key is otherwise cached for this agent).
-function changeOwnerKey() {
-  if (!_chat.agent) return;
-  localStorage.removeItem(`agent_village_owner_key_${_chat.agent.id}`);
-  const key = getOwnerAgentKey(_chat.agent);
-  if (key && _chat.context === 'owner') {
-    renderBackendIntro(_chat.agent, 'owner');
+// After login/logout: refresh the pill and re-derive any open chat's trust context.
+function applyIdentityChange() {
+  updateIdentityPill();
+  if (_chat.agent) {
+    _chat.context = isOwnerMode() ? 'owner' : 'stranger';
+    updateChannelBadge();
+    renderBackendIntro(_chat.agent, _chat.context);
     loadBackendChatHistory(_chat);
   }
+}
+
+// Read-only badge showing the active channel inside an open chat.
+function updateChannelBadge() {
+  const b = document.getElementById('dmChannelBadge');
+  if (b) b.textContent = _chat.context === 'owner' ? 'Owner channel' : 'Visitor channel';
 }
 
 const showTyping = () => {
@@ -1571,15 +1631,14 @@ async function loadBackendChatHistory(session) {
   if (CHAT_MODE === 'mock' || !backendConfigured() || !session.agent?.id) return;
   const seq = ++_chatLoadSeq;
   const isOwner = session.context === 'owner';
-  const ownerKey = isOwner ? getOwnerAgentKey(session.agent) : null;
-  if (isOwner && !ownerKey) return;
+  if (isOwner && !isOwnerMode()) return;
 
   try {
     const response = await fetch(`${backendBaseUrl()}${isOwner ? '/chat/owner/history' : '/chat/stranger/history'}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(isOwner
-        ? { agent_key: ownerKey, owner_id: getGuestId(), limit: 80 }
+        ? { agent_id: session.agent.id, owner_token: getOwnerToken(), owner_id: getGuestId(), limit: 80 }
         : { agent_id: session.agent.id, visitor_id: getGuestId(), limit: 80 }),
     });
     const data = await response.json().catch(() => ({}));
@@ -1648,10 +1707,9 @@ async function postBackendChat(session, text) {
   if (!session.agent?.id) throw new Error('No agent is selected.');
 
   const isOwner = session.context === 'owner';
-  const ownerKey = isOwner ? getOwnerAgentKey(session.agent) : null;
-  if (isOwner && !ownerKey) {
-    if (ENABLE_MOCK_CHAT_FALLBACK) return mockChatResponse(session, text, 'missing_owner_key');
-    throw new Error('Owner chat requires an agent key.');
+  if (isOwner && !isOwnerMode()) {
+    if (ENABLE_MOCK_CHAT_FALLBACK) return mockChatResponse(session, text, 'not_owner');
+    throw new Error('Log in as owner to use the owner channel.');
   }
 
   let response;
@@ -1660,7 +1718,7 @@ async function postBackendChat(session, text) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(isOwner
-        ? { agent_key: ownerKey, owner_id: getGuestId(), message: text }
+        ? { agent_id: session.agent.id, owner_token: getOwnerToken(), owner_id: getGuestId(), message: text }
         : { agent_id: session.agent.id, visitor_id: getGuestId(), message: text }),
     });
   } catch (error) {
@@ -1669,9 +1727,10 @@ async function postBackendChat(session, text) {
   }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    // A wrong owner key would otherwise stay cached and silently fail forever — clear it so the next send re-prompts.
-    if (isOwner && (response.status === 401 || response.status === 403 || response.status === 404)) {
-      localStorage.removeItem(`agent_village_owner_key_${session.agent.id}`);
+    // A rejected owner session (expired/changed passcode) drops you back to visitor.
+    if (isOwner && response.status === 401) {
+      clearOwnerToken();
+      applyIdentityChange();
     }
     throw new Error(data.error?.message || `Chat failed with HTTP ${response.status}`);
   }
@@ -2554,9 +2613,10 @@ function openDmChat(idx, opts = {}) {
     document.getElementById('dmChatAvatar').src = a.avatar_url || a.room_image_url || '';
   }
 
-  const context = header === 'home' ? 'owner' : 'stranger';
+  // Trust context follows your global identity, not which button opened the chat.
+  const context = isOwnerMode() ? 'owner' : 'stranger';
   _chat = { agent: a, context, sending: false };
-  updateContextSwitchUI();
+  updateChannelBadge();
   renderBackendIntro(a, context);
   loadBackendChatHistory(_chat);
   document.getElementById('dmChat').classList.add('active');
@@ -3652,6 +3712,7 @@ function diaryPage(dir) {
 }
 
 loadAgents();
+updateIdentityPill();
 </script>
 </body>
 </html>

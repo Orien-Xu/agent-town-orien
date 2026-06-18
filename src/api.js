@@ -6,6 +6,7 @@ import { getPort, loadEnv } from './config.js';
 import { listEvents, listJobs } from './db.js';
 import { getModel } from './openai.js';
 import {
+  assertOwnerToken,
   chatWithAgent,
   discoverSkill,
   evolveIdentity,
@@ -13,6 +14,7 @@ import {
   listChatHistory,
   seedDefaultSubscriptions,
 } from './service.js';
+import { getOwnerPasscode } from './config.js';
 
 loadEnv();
 
@@ -50,6 +52,7 @@ function sendError(response, status, error) {
 function statusForError(error) {
   const code = error?.code || error?.details?.code;
   const detailCode = error?.details?.code;
+  if (code === 'unauthorized') return 401;
   if (code === 'invalid_json' || code === 'body_too_large' || code === 'usage_error') return 400;
   if (detailCode?.startsWith?.('missing_')) return 400;
   if (detailCode === 'invalid_agent_key' || detailCode === 'invalid_agent_id') return 404;
@@ -174,11 +177,20 @@ async function route(request, response) {
     return;
   }
 
+  if (request.method === 'POST' && pathname === '/auth/owner') {
+    const body = await readJson(request);
+    assertOwnerToken(body.passcode); // throws unauthorized -> 401
+    sendJson(response, 200, { ok: true, token: getOwnerPasscode() });
+    return;
+  }
+
   if (request.method === 'POST' && pathname === '/chat/owner') {
     const body = await readJson(request);
     const result = await chatWithAgent({
       context: 'owner',
       agentKey: body.agent_key,
+      agentId: body.agent_id,
+      ownerToken: body.owner_token,
       message: body.message,
       externalUserId: body.owner_id || null,
     });
@@ -198,6 +210,8 @@ async function route(request, response) {
     const result = await listChatHistory({
       context: 'owner',
       agentKey: body.agent_key,
+      agentId: body.agent_id,
+      ownerToken: body.owner_token,
       limit: intParam(body.limit, 80, 200),
     });
     sendJson(response, 200, {
