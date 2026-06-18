@@ -577,6 +577,10 @@ body{
 .dm-chat-info{flex:1}
 .dm-chat-name{font-size:15px;font-weight:500}
 .dm-chat-status{font-size:11px;color:#4ade80}
+.dm-context-switch{display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02)}
+.dm-ctx-btn{flex:1;height:30px;border-radius:16px;border:1px solid rgba(255,255,255,0.12);background:transparent;color:rgba(255,255,255,0.6);font-size:12px;font-weight:700;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px}
+.dm-ctx-btn.active{background:#c4b5fd;border-color:#c4b5fd;color:#1a0050}
+.dm-ctx-key{height:30px;padding:0 12px;border-radius:16px;border:1px solid rgba(255,255,255,0.12);background:transparent;color:rgba(255,255,255,0.55);font-size:11px;font-weight:600;font-family:inherit;cursor:pointer}
 .dm-messages{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px}
 .msg{margin-bottom:12px;display:flex;flex-direction:column}
 .msg.from-them{align-items:flex-start}
@@ -1355,6 +1359,11 @@ body.explore-active #room .room-content-layer{display:none !important;}
         <div class="dm-chat-status">online</div>
       </div>
     </div>
+    <div class="dm-context-switch" id="dmContextSwitch">
+      <button class="dm-ctx-btn" id="ctxOwnerBtn" onclick="setChatContext('owner')"><i class="ph ph-user-circle"></i>Owner</button>
+      <button class="dm-ctx-btn" id="ctxVisitorBtn" onclick="setChatContext('stranger')"><i class="ph ph-mask-happy"></i>Visitor</button>
+      <button class="dm-ctx-key" id="ctxKeyBtn" onclick="changeOwnerKey()" title="Change owner key">change key</button>
+    </div>
     <div class="dm-messages" id="dmMessages"></div>
     <div class="dm-input-bar">
       <input class="dm-input" id="dmInput" placeholder="Message…" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
@@ -1464,6 +1473,39 @@ function getOwnerAgentKey(agent) {
     if (key) localStorage.setItem(storageKey, key.trim());
   }
   return key?.trim() || '';
+}
+
+// Reflect the active trust context in the Owner|Visitor toggle.
+function updateContextSwitchUI() {
+  const owner = _chat.context === 'owner';
+  document.getElementById('ctxOwnerBtn')?.classList.toggle('active', owner);
+  document.getElementById('ctxVisitorBtn')?.classList.toggle('active', !owner);
+  const keyBtn = document.getElementById('ctxKeyBtn');
+  if (keyBtn) keyBtn.style.display = owner ? '' : 'none';
+}
+
+// Switch the current chat between owner (full trust) and visitor (limited trust) on demand.
+function setChatContext(context) {
+  if (!_chat.agent || _chat.sending || _chat.context === context) return;
+  if (context === 'owner' && !getOwnerAgentKey(_chat.agent)) {
+    appendDmMessage('system', 'Owner key needed for the owner channel — staying on Visitor.');
+    return;
+  }
+  _chat.context = context;
+  updateContextSwitchUI();
+  renderBackendIntro(_chat.agent, context);
+  loadBackendChatHistory(_chat);
+}
+
+// Clear and re-enter the owner key (a wrong key is otherwise cached for this agent).
+function changeOwnerKey() {
+  if (!_chat.agent) return;
+  localStorage.removeItem(`agent_village_owner_key_${_chat.agent.id}`);
+  const key = getOwnerAgentKey(_chat.agent);
+  if (key && _chat.context === 'owner') {
+    renderBackendIntro(_chat.agent, 'owner');
+    loadBackendChatHistory(_chat);
+  }
 }
 
 const showTyping = () => {
@@ -2514,6 +2556,7 @@ function openDmChat(idx, opts = {}) {
 
   const context = header === 'home' ? 'owner' : 'stranger';
   _chat = { agent: a, context, sending: false };
+  updateContextSwitchUI();
   renderBackendIntro(a, context);
   loadBackendChatHistory(_chat);
   document.getElementById('dmChat').classList.add('active');
