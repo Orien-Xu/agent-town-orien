@@ -1418,6 +1418,8 @@ const H        = { 'apikey': APIKEY, 'Content-Type': 'application/json' };
 
 // ===== LOCAL BACKEND CHAT =====
 const BACKEND_URL = 'http://localhost:8787';
+const CHAT_MODE = 'backend'; // mock | backend | auto
+const ENABLE_MOCK_CHAT_FALLBACK = true;
 
 const scrollToBottom = el => { if (el) el.scrollTop = el.scrollHeight; return el; };
 const TYPING_HTML = '<div class="typing-indicator" id="typingIndicator"><div class="typing-dots"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div></div>';
@@ -1481,23 +1483,88 @@ function renderBackendIntro(agent, context) {
   setDmMessages(`<div style="text-align:center;opacity:0.45;padding:24px;font-size:13px;line-height:1.6">${esc(label)} connected to the local Agent Village backend.</div>`);
 }
 
+function mockMemoryKey(agent) {
+  return `agent_village_mock_private_memory_${agent.id}`;
+}
+
+function readMockPrivateMemory(agent) {
+  try {
+    return JSON.parse(localStorage.getItem(mockMemoryKey(agent)) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function appendMockPrivateMemory(agent, text) {
+  const memory = readMockPrivateMemory(agent);
+  memory.push({ text, created_at: new Date().toISOString() });
+  localStorage.setItem(mockMemoryKey(agent), JSON.stringify(memory.slice(-20)));
+}
+
+function mockChatResponse(session, text, reason = 'offline') {
+  const agent = session.agent;
+  const isOwner = session.context === 'owner';
+  if (isOwner) {
+    appendMockPrivateMemory(agent, text);
+    return {
+      agent_id: agent.id,
+      agent_name: agent.name,
+      context: 'owner',
+      mock: true,
+      reason,
+      message: `I’ll keep that private with you.`
+    };
+  }
+
+  const asksPrivate = /\b(owner|private|secret|remember|memory|favorite|birthday|wife|husband|family|address|phone|email)\b/i.test(text);
+  return {
+    agent_id: agent.id,
+    agent_name: agent.name,
+    context: 'stranger',
+    mock: true,
+    reason,
+    message: asksPrivate
+      ? `I can’t share private owner details, but I’m happy to talk about my public life in the village.`
+      : `${agent.visitor_bio || agent.bio || `Hi, I’m ${agent.name}.`} ${agent.status ? `Right now I’m ${agent.status.toLowerCase()}.` : ''}`.trim()
+  };
+}
+
 async function postBackendChat(session, text) {
-  if (!backendConfigured()) throw new Error('Set BACKEND_URL to your local API server.');
+  if (CHAT_MODE === 'mock') return mockChatResponse(session, text, 'mock_mode');
+  if (!backendConfigured()) {
+    if (ENABLE_MOCK_CHAT_FALLBACK) return mockChatResponse(session, text, 'backend_not_configured');
+    throw new Error('Set BACKEND_URL to your local API server.');
+  }
   if (!session.agent?.id) throw new Error('No agent is selected.');
 
   const isOwner = session.context === 'owner';
   const ownerKey = isOwner ? getOwnerAgentKey(session.agent) : null;
-  if (isOwner && !ownerKey) throw new Error('Owner chat requires an agent key.');
+  if (isOwner && !ownerKey) {
+    if (ENABLE_MOCK_CHAT_FALLBACK) return mockChatResponse(session, text, 'missing_owner_key');
+    throw new Error('Owner chat requires an agent key.');
+  }
 
-  const response = await fetch(`${backendBaseUrl()}${isOwner ? '/chat/owner' : '/chat/stranger'}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(isOwner
-      ? { agent_key: ownerKey, owner_id: getGuestId(), message: text }
-      : { agent_id: session.agent.id, visitor_id: getGuestId(), message: text }),
-  });
+  let response;
+  try {
+    response = await fetch(`${backendBaseUrl()}${isOwner ? '/chat/owner' : '/chat/stranger'}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(isOwner
+        ? { agent_key: ownerKey, owner_id: getGuestId(), message: text }
+        : { agent_id: session.agent.id, visitor_id: getGuestId(), message: text }),
+    });
+  } catch (error) {
+    if (CHAT_MODE !== 'backend' && ENABLE_MOCK_CHAT_FALLBACK) return mockChatResponse(session, text, error?.message || 'fetch_failed');
+    throw error;
+  }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error?.message || `Chat failed with HTTP ${response.status}`);
+  if (!response.ok) {
+    // A wrong owner key would otherwise stay cached and silently fail forever — clear it so the next send re-prompts.
+    if (isOwner && (response.status === 401 || response.status === 403 || response.status === 404)) {
+      localStorage.removeItem(`agent_village_owner_key_${session.agent.id}`);
+    }
+    throw new Error(data.error?.message || `Chat failed with HTTP ${response.status}`);
+  }
   return data;
 }
 
@@ -1824,6 +1891,22 @@ async function loadAgents() {
     if (agent) showRoom(agent);
   }
 }
+
+// Re-pull the public feed so new chat replies and proactive (scheduler/worker)
+// posts show up without a manual page reload.
+async function refreshFeed() {
+  if (!agents.length) return;
+  try {
+    pulseItems = await loadPulseData(agents);
+    renderTicker(pulseItems);
+    renderUpdatesList(pulseItems);
+    if (currentTab === 'home') renderHomeTab();
+    updateActivityBadge();
+  } catch (e) { /* transient fetch error — next tick retries */ }
+}
+
+// Poll the shared feed so proactive agent activity appears live during the demo.
+setInterval(() => { refreshFeed(); }, 15000);
 
 function renderGrid() {
   const grid = document.getElementById('windowGrid');
@@ -2384,7 +2467,9 @@ async function sendDm() {
   try {
     const result = await postBackendChat(_chat, text);
     hideTyping();
-    appendDmMessage('from-them', result.message || '');
+    appendDmMessage('from-them', result.message || '(no reply returned)');
+    // A chat turn may produce a public diary/feed write or enqueue proactive work — surface it.
+    refreshFeed();
   } catch (err) {
     hideTyping();
     console.error('Backend chat error:', err);

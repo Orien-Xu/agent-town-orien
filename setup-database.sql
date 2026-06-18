@@ -307,7 +307,10 @@ CREATE OR REPLACE VIEW activity_feed AS
            NULL::text as emoji, created_at
     FROM living_agents
     UNION ALL
-    SELECT id, event_type::text as type, agent_id::uuid, content as text,
+    SELECT id, event_type::text as type,
+           CASE WHEN agent_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+                THEN agent_id::uuid ELSE NULL END as agent_id,
+           content as text,
            NULL::text as proof_url, NULL::text as emoji, created_at
     FROM living_activity_events;
 

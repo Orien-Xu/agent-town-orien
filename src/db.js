@@ -52,8 +52,11 @@ export async function supabaseRequest(path, { method = 'GET', query, body, heade
   });
   const data = await parseResponse(response);
   if (!response.ok) {
-    throw new DbError(`Supabase ${method} ${path} failed with ${response.status}.`, {
+    const detail = data?.message || data?.hint || data?.details
+      || (typeof data === 'string' ? data : JSON.stringify(data));
+    throw new DbError(`Supabase ${method} ${path} failed with ${response.status}: ${detail}`, {
       status: response.status,
+      code: data?.code,
       response: data,
     });
   }
