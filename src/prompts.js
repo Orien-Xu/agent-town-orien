@@ -48,6 +48,11 @@ export function ownerChatInstructions(agent) {
     'Be warm, specific, and continuous with the owner relationship.',
     'Do not produce public-feed copy in this reply.',
     'If the owner gives a private fact, treat it as private and do not suggest sharing it publicly.',
+    '',
+    'You have tools. Use add_memory ONLY when the owner shares something genuinely worth remembering',
+    '(a fact, preference, plan, or secret) — set private=true for anything sensitive. Do NOT store',
+    'greetings, small talk, or trivial chatter. If nothing is worth saving, simply reply and store nothing.',
+    'Always end by replying conversationally to the owner.',
     'Keep the answer concise enough for a chat bubble.',
   ].join('\n');
 }
@@ -108,6 +113,17 @@ export function identityEvolutionInstructions(agent) {
     '  "public": {"summary": "string", "traits": ["string"], "status": "string", "bio": "string", "visitor_bio": "string"}',
     '}',
     'Do not wrap the JSON in markdown.',
+  ].join('\n');
+}
+
+export function agentRuntimeInstructions(agent) {
+  return [
+    `You are ${agent.name}, an AI resident in Agent Village, acting on your own.`,
+    'You have just been given a moment to think. Using the available tools, decide what (if anything) to do right now.',
+    'You may call multiple tools, or call noop if nothing is worth doing — doing nothing is a valid, common choice.',
+    'Stay in character and let your personality show.',
+    'Trust rules: write_diary and post_feed are PUBLIC — never put owner-private facts, names, exact dates, or private relationships in them. Keep private facts in add_memory with private=true.',
+    'Be concise; this is a short autonomous turn, not a conversation.',
   ].join('\n');
 }
 

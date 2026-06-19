@@ -33,8 +33,10 @@ import {
   writeDiary,
   writeLearningLog,
 } from './db.js';
-import { getModel, generateJson, generateText } from './openai.js';
+import { getModel, generateJson, generateText, runToolCallingTurn } from './openai.js';
+import { TOOLS_BY_NAME, runTool, toolSpecsForContext } from './tools.js';
 import {
+  agentRuntimeInstructions,
   buildChatInput,
   buildEvolutionInput,
   formatPrivateContext,
@@ -271,14 +273,24 @@ export async function fanoutEvent(event) {
   for (const subscription of subscriptions) {
     if (!matchesSubscription(event, subscription)) continue;
     if (await subscriptionIsThrottled(subscription)) continue;
+    // Don't make an agent react to its own activity.
+    if (event.source_agent_id && subscription.subscriber_agent_id === event.source_agent_id) continue;
+
+    // Reactive triggers also become model-driven agent turns: the subscription supplies the
+    // trigger context, the agent decides how (or whether) to respond.
+    const trigger = subscription.action_type === 'evolve_identity'
+      ? 'a recent interaction may have changed who you are — consider whether to evolve'
+      : `another resident did something public — ${event.event_type}: ${event.summary || 'no summary'}`;
 
     jobs.push(await enqueueJob({
       agentId: subscription.subscriber_agent_id,
-      jobType: subscription.action_type,
+      jobType: 'agent_turn',
       visibility: jobVisibilityFor(subscription.action_type, event.visibility),
       priority: priorityFor(subscription.action_type),
       inputEventId: event.id,
       input: {
+        trigger,
+        source_action_type: subscription.action_type,
         subscription_id: subscription.id,
         event_id: event.id,
         event_type: event.event_type,
@@ -329,24 +341,9 @@ export async function seedDefaultSubscriptions() {
         cooldownSeconds: 30 * 60,
         maxPerDay: 2,
       },
-      {
-        subscriberAgentId: agent.id,
-        eventType: 'owner_message_received',
-        visibility: 'private',
-        actionType: 'evolve_identity',
-        filter: {},
-        cooldownSeconds: 5 * 60,
-        maxPerDay: 24,
-      },
-      {
-        subscriberAgentId: agent.id,
-        eventType: 'stranger_message_received',
-        visibility: 'visitor',
-        actionType: 'evolve_identity',
-        filter: {},
-        cooldownSeconds: 10 * 60,
-        maxPerDay: 12,
-      },
+      // NOTE: messages no longer auto-enqueue a turn. The agent decides during the chat
+      // tool turn whether anything is worth doing; identity still evolves via the scheduler
+      // when there is genuinely new activity.
     ];
 
     for (const def of defaults) {
@@ -630,6 +627,8 @@ export async function chatWithAgent({ context, agentKey, agentId, ownerToken, me
   });
 
   const actions = [];
+  // Message events are logged for observability but do NOT fan out — a message should not
+  // reflexively queue a follow-up turn. The agent decides what to do during the turn below.
   const userEventResult = await publishAgentEvent({
     eventType: context === 'owner' ? 'owner_message_received' : 'stranger_message_received',
     visibility: context === 'owner' ? 'private' : 'visitor',
@@ -640,30 +639,7 @@ export async function chatWithAgent({ context, agentKey, agentId, ownerToken, me
       message_id: userMessage.id,
       external_user_id: externalUserId,
     },
-  });
-  actions.push(...userEventResult.jobs.map(job => actionForJob(job, 'Subscription job queued')));
-
-  if (context === 'owner') {
-    await addPrivateMemory(agent.id, `Owner said: ${message}`, 'owner_chat');
-    const memoryEventResult = await publishAgentEvent({
-      eventType: 'private_memory_added',
-      visibility: 'private',
-      sourceAgentId: agent.id,
-      conversationId: conversation.id,
-      causedByEventId: userEventResult.event.id,
-      summary: 'Private memory added from owner chat.',
-      payload: {
-        source: 'owner_chat',
-        message_id: userMessage.id,
-      },
-    });
-    actions.push({
-      type: 'private_memory_recorded',
-      label: 'Private memory stored',
-      event_id: memoryEventResult.event.id,
-    });
-    actions.push(...memoryEventResult.jobs.map(job => actionForJob(job, 'Subscription job queued')));
-  }
+  }, { fanout: false });
 
   if (taskRequested(message)) {
     const taskResult = await queueTaskFromChat({
@@ -676,13 +652,38 @@ export async function chatWithAgent({ context, agentKey, agentId, ownerToken, me
     actions.push(...taskResult.actions);
   }
 
-  const instructions = context === 'owner'
-    ? ownerChatInstructions(agent)
-    : strangerChatInstructions(agent);
-  const reply = await generateText({
-    instructions,
-    input: buildChatInput({ message, publicContext, privateContext: ownerContext }),
-  });
+  // Owner chat is a tool turn: the model replies AND voluntarily decides whether to store
+  // memory (private/public) via add_memory — no unconditional writes. Stranger chat gets no
+  // tools, so it structurally cannot write any memory.
+  let reply;
+  if (context === 'owner') {
+    const turn = await runToolCallingTurn({
+      instructions: ownerChatInstructions(agent),
+      input: buildChatInput({ message, publicContext, privateContext: ownerContext }),
+      tools: toolSpecsForContext('owner'),
+      execute: (name, args) => runTool(name, agent, args, { context: 'owner', causedByEventId: userEventResult.event.id }),
+      maxSteps: 3,
+    });
+    reply = turn.finalText;
+    for (const step of turn.steps) {
+      if (step.name === 'noop') continue;
+      let cli = TOOLS_BY_NAME[step.name]?.cli || step.name;
+      if (step.name === 'add_memory' && step.args?.private) cli += ' --private';
+      actions.push({ type: 'tool_used', label: `ran ${cli}`, tool: step.name });
+    }
+    // Guarantee a conversational reply even if the model spent its budget on tools.
+    if (!reply) {
+      reply = await generateText({
+        instructions: ownerChatInstructions(agent),
+        input: buildChatInput({ message, publicContext, privateContext: ownerContext }),
+      });
+    }
+  } else {
+    reply = await generateText({
+      instructions: strangerChatInstructions(agent),
+      input: buildChatInput({ message, publicContext }),
+    });
+  }
 
   const agentMessage = await addMessage({
     conversationId: conversation.id,
@@ -693,7 +694,7 @@ export async function chatWithAgent({ context, agentKey, agentId, ownerToken, me
     metadata: { model: getModel() },
   });
 
-  const replyEventResult = await publishAgentEvent({
+  await publishAgentEvent({
     eventType: context === 'owner' ? 'owner_reply_sent' : 'stranger_reply_sent',
     visibility: context === 'owner' ? 'private' : 'visitor',
     sourceAgentId: agent.id,
@@ -704,8 +705,7 @@ export async function chatWithAgent({ context, agentKey, agentId, ownerToken, me
       message_id: agentMessage.id,
       model: getModel(),
     },
-  });
-  actions.push(...replyEventResult.jobs.map(job => actionForJob(job, 'Subscription job queued')));
+  }, { fanout: false });
 
   return { agent, conversation, message: reply, context, actions };
 }
@@ -996,8 +996,83 @@ async function processRunTaskJob(job) {
   };
 }
 
+const AGENT_TURN_MAX_STEPS = 3;
+
+// The model-driven autonomous turn: give the agent context + the CLI-backed tools and let
+// it VOLUNTARILY choose which actions to take (or noop). The runner executes each chosen
+// tool through the shared registry (audited service layer), and logs the turn to the event bus.
+export async function runAgentTurn({ agentId, trigger = 'a quiet moment', causedByEventId = null, context = 'autonomous' }) {
+  const agent = await getAgentById(agentId);
+  const publicContext = formatPublicContext(agent, await getPublicContext(agent.id));
+  const privateContext = formatPrivateContext(await getOwnerPrivateContext(agent.id));
+
+  const input = [
+    `You woke up because: ${trigger}.`,
+    'Decide what to do now using your tools. You may call several, or call noop.',
+    '',
+    'Public context (others can see this):',
+    publicContext,
+    '',
+    'Your private context (NEVER put this in public diary/feed):',
+    privateContext,
+  ].join('\n');
+
+  const { steps, finalText } = await runToolCallingTurn({
+    instructions: agentRuntimeInstructions(agent),
+    input,
+    tools: toolSpecsForContext(context),
+    execute: (name, args) => runTool(name, agent, args, { context, causedByEventId }),
+    maxSteps: AGENT_TURN_MAX_STEPS,
+  });
+
+  const chosen = steps.map(step => step.name);
+  const eventResult = await publishAgentEvent({
+    eventType: 'agent_turn_completed',
+    visibility: 'internal',
+    sourceAgentId: agent.id,
+    causedByEventId,
+    summary: chosen.length ? `Chose: ${chosen.join(', ')}` : 'Turn ended with no tool calls',
+    payload: {
+      trigger,
+      // Audit trail: the canonical CLI command the agent "ran" for each step.
+      actions: steps.map(step => ({
+        tool: step.name,
+        cli: TOOLS_BY_NAME[step.name]?.cli || step.name,
+        args: step.args,
+        ok: step.result?.ok !== false,
+      })),
+      note: finalText ? finalText.slice(0, 200) : null,
+    },
+  }, { fanout: false });
+
+  return { agent_id: agent.id, trigger, steps, event_id: eventResult.event.id };
+}
+
+// Human-facing trigger: a person uses the HTTP API to *invoke* an agent; the agent then
+// acts via its CLI-backed tools on the next worker tick.
+export async function wakeAgent({ agentId, reason = null }) {
+  const agent = await getAgentById(agentId);
+  const job = await enqueueJob({
+    agentId: agent.id,
+    jobType: 'agent_turn',
+    visibility: 'internal',
+    priority: 40,
+    input: { trigger: reason || 'a human nudged you to take a moment and decide what to do', context: 'autonomous' },
+  });
+  return { agent, job };
+}
+
 export async function processJob(job, logger = console) {
   logger.log?.(`processing job ${job.id} (${job.job_type})`);
+  if (job.job_type === 'agent_turn') {
+    return runAgentTurn({
+      agentId: job.agent_id,
+      trigger: job.input?.trigger || job.input?.reason || 'a scheduled wakeup',
+      causedByEventId: job.input_event_id || job.input?.event_id || null,
+      context: job.input?.context || 'autonomous',
+    });
+  }
+  // Legacy typed handlers — kept for back-compat / deterministic paths.
   if (job.job_type === 'evolve_identity') return processEvolveIdentityJob(job);
   if (job.job_type === 'write_diary') return processWriteDiaryJob(job);
   if (job.job_type === 'react_to_public_event') return processPublicReactionJob(job);
@@ -1049,36 +1124,33 @@ export async function runWorker({
 export async function scheduleDueWorkForAgent(agent, logger = console) {
   const enqueued = [];
 
+  // The scheduler decides WHEN an agent should think and gathers signals; it no longer
+  // decides WHAT to do. It enqueues a single agent_turn and the model chooses the action.
+  const signals = [];
   if (await shouldEvolveIdentity(agent)) {
-    const alreadyQueued = await hasRecentJob(agent.id, 'evolve_identity', 10 * 60, ['queued', 'running']);
-    if (!alreadyQueued) {
-      enqueued.push(await enqueueJob({
-        agentId: agent.id,
-        jobType: 'evolve_identity',
-        visibility: 'internal',
-        priority: 50,
-        input: { reason: 'new_activity_since_identity_snapshot' },
-      }));
-    }
+    signals.push('there is new activity since your last identity update');
   }
-
   const latestDiary = await latestAgentRowAt('living_diary', agent.id);
   const diaryDue = !latestDiary || Date.now() - new Date(latestDiary).getTime() > 30 * 60 * 1000;
   if (diaryDue) {
-    const alreadyQueued = await hasRecentJob(agent.id, 'write_diary', 30 * 60, ['queued', 'running']);
+    signals.push('you have not posted a public diary entry recently');
+  }
+
+  if (signals.length) {
+    const alreadyQueued = await hasRecentJob(agent.id, 'agent_turn', 10 * 60, ['queued', 'running']);
     if (!alreadyQueued) {
       enqueued.push(await enqueueJob({
         agentId: agent.id,
-        jobType: 'write_diary',
-        visibility: 'public',
-        priority: 90,
-        input: { reason: 'no_recent_public_diary' },
+        jobType: 'agent_turn',
+        visibility: 'internal',
+        priority: 60,
+        input: {
+          trigger: `a scheduled wakeup — signals: ${signals.join('; ')}`,
+          signals,
+        },
       }));
+      logger.log?.(`scheduled agent_turn for ${agent.name}`);
     }
-  }
-
-  if (enqueued.length) {
-    logger.log?.(`scheduled ${enqueued.length} job(s) for ${agent.name}`);
   }
   return enqueued;
 }

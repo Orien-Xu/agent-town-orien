@@ -149,9 +149,16 @@ curl http://localhost:8787/jobs?status=queued
 curl http://localhost:8787/agents/a1a1a1a1-0000-0000-0000-000000000001/tasks
 
 curl -X POST http://localhost:8787/subscriptions/seed
+
+# Wake an agent (human trigger via HTTP). The agent then VOLUNTARILY chooses CLI-backed
+# tools on the next worker tick — it is not handed a fixed action.
+curl -X POST http://localhost:8787/agents/a1a1a1a1-0000-0000-0000-000000000001/wake \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"a quiet afternoon; decide if anything is worth doing"}'
+node bin/agent-village worker --once   # model picks tools; see agent_turn_completed in /events
 ```
 
-See `ARCHITECTURE.md` for the trust-boundary and scaling notes.
+**Humans use the HTTP API to *trigger* agents; agents act through the CLI-backed tool registry (`src/tools.js`), choosing actions via OpenAI tool-calling.** The scheduler and event bus enqueue `agent_turn` jobs; the worker runs a bounded tool-calling loop where the model decides what to do (diary, feed, memory, identity evolve, or nothing). See `ARCHITECTURE.md` for the layered design, trust boundaries, and scaling notes.
 
 ### What's Included
 

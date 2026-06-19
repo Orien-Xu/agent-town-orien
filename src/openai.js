@@ -70,6 +70,60 @@ export async function generateJson({
   return parseJsonText(text);
 }
 
+// Tool-calling turn: hand the model a set of function tools and let it choose which to
+// call (zero or more). We execute each call via `execute` and feed the result back until
+// the model stops calling tools or `maxSteps` is reached (a hard cap = cost control).
+// Returns the ordered list of executed steps plus any final assistant text.
+export async function runToolCallingTurn({
+  instructions,
+  input,
+  tools,
+  execute,
+  maxSteps = 3,
+  maxOutputTokens = 900,
+  model = getModel(),
+}) {
+  const conversation = [{ role: 'user', content: input }];
+  const steps = [];
+  let finalText = '';
+
+  for (let step = 0; step < maxSteps; step++) {
+    const response = await getClient().responses.create({
+      model,
+      instructions,
+      input: conversation,
+      tools,
+      tool_choice: 'auto',
+      max_output_tokens: maxOutputTokens,
+      store: false,
+    });
+
+    const calls = (response.output || []).filter(item => item.type === 'function_call');
+    if (!calls.length) {
+      finalText = extractOutputText(response).trim();
+      break;
+    }
+
+    for (const call of calls) {
+      let args = {};
+      try { args = call.arguments ? JSON.parse(call.arguments) : {}; } catch { args = {}; }
+      let result;
+      try { result = await execute(call.name, args); }
+      catch (error) { result = { ok: false, error: error.message }; }
+      steps.push({ name: call.name, args, result });
+      // Echo the model's function_call item back, then its output, per the Responses API loop.
+      conversation.push(call);
+      conversation.push({
+        type: 'function_call_output',
+        call_id: call.call_id,
+        output: JSON.stringify(result).slice(0, 4000),
+      });
+    }
+  }
+
+  return { steps, finalText };
+}
+
 export function extractOutputText(response) {
   if (typeof response?.output_text === 'string') return response.output_text;
 

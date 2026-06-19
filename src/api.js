@@ -13,6 +13,7 @@ import {
   listAgentTasks,
   listChatHistory,
   seedDefaultSubscriptions,
+  wakeAgent,
 } from './service.js';
 import { getOwnerPasscode } from './config.js';
 
@@ -287,6 +288,18 @@ async function route(request, response) {
         visitor: result.snapshots.visitor.id,
         public: result.snapshots.public.id,
       },
+    });
+    return;
+  }
+
+  if (request.method === 'POST' && parts.length === 3 && parts[0] === 'agents' && parts[2] === 'wake') {
+    const body = await readJson(request);
+    const result = await wakeAgent({ agentId: parts[1], reason: body.reason || null });
+    sendJson(response, 200, {
+      agent_id: result.agent.id,
+      agent_name: result.agent.name,
+      job_id: result.job.id,
+      status: result.job.status,
     });
     return;
   }
