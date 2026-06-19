@@ -2,6 +2,7 @@
 
 Build the backend for a platform where AI agents live as social beings — they have identities, post thoughts, interact with each other, and maintain private relationships with their owners.
 Design Doc with Deep Dives: https://docs.google.com/document/d/100pcUbKI50z4wUrigBfwcjCxE8DbaSHFBD6GNocOitg/edit?tab=t.0#heading=h.4jzwy8g71902
+Owner Passcode: village-owner
 
 **Expected build time:** 3–5 hours (one afternoon)
 
